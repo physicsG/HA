@@ -367,14 +367,14 @@ actions:
   # ====== overwriting), but make the read defensively bullet-proof ======
   # ====== so any template error returns empty instead of aborting. ======
   - variables:
-      trigger_action_final: "{{ (trigger.payload | default('')) | string }}"
-      _raw_helper: "{{ states(helper_last_controller_event) | default('', true) | string }}"
+      trigger_action_final: "{{ '' ~ (trigger.payload | default('')) }}"
+      _raw_helper: "{{ '' ~ states(helper_last_controller_event) }}"
       last_controller_event: >-
-        {% set p = (_raw_helper | from_json) if (_raw_helper.startswith('{') and
-        _raw_helper.endswith('}')) else {} %} {{ p.a | default('') }}
+        {% set p = (_raw_helper | from_json) if (_raw_helper[:1] == '{' and
+        _raw_helper[-1:] == '}') else {} %} {{ p.a | default('') }}
       last_controller_event_t: >-
-        {% set p = (_raw_helper | from_json) if (_raw_helper.startswith('{') and
-        _raw_helper.endswith('}')) else {} %} {{ p.t | default(0) | float(0) }}
+        {% set p = (_raw_helper | from_json) if (_raw_helper[:1] == '{' and
+        _raw_helper[-1:] == '}') else {} %} {{ p.t | default(0) | float(0) }}
       trigger_delta: "{{ ((as_timestamp(now()) - (last_controller_event_t | float(0)))
         * 1000) | int }}"
 
@@ -393,16 +393,15 @@ actions:
 
   # Dim-to-warm state, computed defensively (any error -> defaults).
   - variables:
-      _raw_state: "{{ states(v_helper_state) | default('', true) | string }}"
+      _raw_state: "{{ '' ~ states(v_helper_state) }}"
       cur_b: >-
-        {% set p = (_raw_state | from_json) if (_raw_state.startswith('{') and
-        _raw_state.endswith('}')) else {} %} {{ p.b |
+        {% set p = (_raw_state | from_json) if (_raw_state[:1] == '{' and
+        _raw_state[-1:] == '}') else {} %} {{ p.b |
         default(v_default_brightness, true) | int }}
       cur_k: >-
-        {% set p = (_raw_state | from_json) if (_raw_state.startswith('{') and
-        _raw_state.endswith('}')) else {} %} {% set kdef = ((v_min_kelvin | int
-        + v_max_kelvin | int) / 2) | int %} {{ p.k | default(kdef, true) | int
-        }}
+        {% set p = (_raw_state | from_json) if (_raw_state[:1] == '{' and
+        _raw_state[-1:] == '}') else {} %} {% set kdef = ((v_min_kelvin | int +
+        v_max_kelvin | int) / 2) | int %} {{ p.k | default(kdef, true) | int }}
       any_on: "{{ v_target_lights | map('states') | select('eq', 'on') | list | count
         > 0 }}"
 
