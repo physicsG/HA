@@ -12,7 +12,8 @@
 #
 # Required helpers (create both as input_text in Settings -> Devices & Services -> Helpers):
 #   - one for "last event"   (double-press detection)
-#   - one for "last command" (echo suppression on external state changes)
+#   - one for "light state"  (group brightness + Kelvin snapshot used by both
+#                              the long-press loop and echo suppression)
 #
 blueprint:
   name: STYRBAR + Dim-to-Warm
@@ -26,7 +27,12 @@ blueprint:
 
     **Required helpers** (create both before importing):
       - `input_text` for **last event** (double-press detection)
-      - `input_text` for **last command** (echo suppression)
+      - `input_text` for **light state** (group `{brightness, kelvin}` snapshot —
+        used as the source of truth for the dim loop and to suppress echoes from
+        the blueprint's own commands)
+
+    All selected lights are treated as one group: brightness and Kelvin are
+    computed once per step and applied to every light in the same call.
 
     Up = on / brighten (held). Down = off / dim (held). Left/Right and double-press
     actions are user-defined and optional.
@@ -38,7 +44,8 @@ blueprint:
     # ------- required -------
     lights:
       name: (Required) Lights
-      description: One or more lights to control. To use a light group, create one in HA and select that group's entity here.
+      description: One or more lights to control. To use a light group, create one in
+        HA and select that group's entity here.
       selector:
         entity:
           domain: light
@@ -58,13 +65,16 @@ blueprint:
           multiple: false
     helper_last_event:
       name: (Required) Helper - Last event
-      description: An `input_text` used to remember the last button press for double-press detection.
+      description: An `input_text` used to remember the last button press for
+        double-press detection.
       selector:
         entity:
           domain: input_text
-    helper_last_command:
-      name: (Required) Helper - Last command
-      description: An `input_text` used to remember the last brightness/Kelvin command this blueprint issued, used to suppress echo from `state_changed` events.
+    helper_light_state:
+      name: (Required) Helper - Light state
+      description: An `input_text` used as the group light-state snapshot (`{b, k,
+        t}`). Acts as the source of truth for the dim-to-warm loop and as the
+        echo filter for external `state_changed` events.
       selector:
         entity:
           domain: input_text
@@ -116,7 +126,8 @@ blueprint:
           mode: slider
     kelvin_deadband:
       name: Kelvin deadband
-      description: Ignore external brightness changes whose computed Kelvin shift is smaller than this. Helps prevent feedback loops.
+      description: Ignore external brightness changes whose computed Kelvin shift is
+        smaller than this. Helps prevent feedback loops.
       default: 25
       selector:
         number:
@@ -127,7 +138,8 @@ blueprint:
           mode: slider
     stabilization_delay_ms:
       name: Stabilization delay (ms)
-      description: Time window after the blueprint sets a light's value during which echoed `state_changed` events for that light are ignored.
+      description: Time window after the blueprint sets a light's value during which
+        echoed `state_changed` events for that light are ignored.
       default: 150
       selector:
         number:
@@ -209,19 +221,24 @@ blueprint:
     # ------- behavior toggles -------
     apply_on_turn_on:
       name: Apply dim-to-warm when turning on
-      description: When the up button turns lights on, also recompute Kelvin from the resulting brightness.
+      description: When the up button turns lights on, also recompute Kelvin from the
+        resulting brightness.
       default: true
       selector:
         boolean:
     listen_external_changes:
       name: React to external brightness changes
-      description: When enabled, the blueprint also listens for `state_changed` events on the selected lights and re-applies the dim-to-warm curve. Echoes from the blueprint's own commands are suppressed via the last-command helper plus stabilization delay.
+      description: When enabled, the blueprint also listens for `state_changed` events
+        on the selected lights and re-applies the dim-to-warm curve. Echoes from
+        the blueprint's own commands are suppressed via the light-state helper
+        plus stabilization delay.
       default: true
       selector:
         boolean:
     expose_up_double:
       name: Expose Up double-press
-      description: Enable to use the Up double-press action. Adds the double-press window of latency to the Up short press.
+      description: Enable to use the Up double-press action. Adds the double-press
+        window of latency to the Up short press.
       default: false
       selector:
         boolean:
@@ -241,7 +258,7 @@ blueprint:
       selector:
         boolean:
 
-    # ------- optional custom actions -------
+          # ------- optional custom actions -------
     action_up_double:
       name: (Optional) Up double-press action
       default: []
@@ -301,7 +318,7 @@ variables:
   # convert inputs to variables for use in templates
   lights: !input lights
   helper_last_event: !input helper_last_event
-  helper_last_command: !input helper_last_command
+  helper_light_state: !input helper_light_state
   min_kelvin: !input min_kelvin
   max_kelvin: !input max_kelvin
   lower_zone_pct: !input lower_zone_pct
@@ -397,11 +414,13 @@ actions:
   - variables:
       event_class: '{{ "external" if trigger.id == "external_state" else "remote" }}'
       trigger_action: >-
-        {{ trigger.payload | default("", true) if event_class == "remote" else "" }}
+        {{ trigger.payload | default("", true) if event_class == "remote" else
+        "" }}
 
   - choose:
       # ============================================================
-      # Branch A: external brightness change on a tracked light
+      # Branch A: external brightness change on a tracked light.
+      # Treat all selected lights as one group: re-apply (b, k) once.
       # ============================================================
       - conditions:
           - '{{ event_class == "external" }}'
@@ -411,29 +430,23 @@ actions:
           - '{{ trigger.to_state.attributes.brightness is not none }}'
         sequence:
           - variables:
-              changed_entity: '{{ trigger.entity_id }}'
               new_brightness: '{{ trigger.to_state.attributes.brightness | int(0) }}'
               new_brightness_pct: '{{ ((new_brightness / 255) * 100) | round(0) }}'
-              # parse last command helper: {"e":entity,"b":brightness_0_255,"k":kelvin,"t":timestamp}
-              last_cmd_raw: '{{ states(helper_last_command) }}'
-              last_cmd: >-
-                {{ (last_cmd_raw | from_json)
-                   if last_cmd_raw is string
-                      and last_cmd_raw | regex_match('^\{.*\}$')
+              # parse light-state helper: {"b":<0-255>,"k":<kelvin>,"t":<epoch>}
+              ls_raw: '{{ states(helper_light_state) }}'
+              ls: >-
+                {{ (ls_raw | from_json)
+                   if ls_raw is string
+                      and ls_raw | regex_match('^\{.*\}$')
                    else {} }}
-              cmd_age_ms: '{{ ((as_timestamp(now()) - (last_cmd.t | default(0))) * 1000) | int }}'
-              is_echo: >-
-                {{ last_cmd.e | default('') == changed_entity
-                   and (last_cmd.b | default(-999) | int(-999) - new_brightness) | abs <= 5
-                   and cmd_age_ms <= stabilization_delay_ms | int }}
+              ls_age_ms: '{{ ((as_timestamp(now()) - (ls.t | default(0))) * 1000) | int }}'
               # compute target kelvin from dim-to-warm curve
               lz: '{{ lower_zone_pct | float(10) }}'
               uz: '{{ upper_zone_pct | float(90) }}'
               mn: '{{ min_kelvin | float(2500) }}'
               mx: '{{ max_kelvin | float(4000) }}'
               target_kelvin: >-
-                {%- set p = new_brightness_pct | float(0) -%}
-                {%- if p <= lz -%}
+                {%- set p = new_brightness_pct | float(0) -%} {%- if p <= lz -%}
                   {{ mn | int }}
                 {%- elif p >= uz -%}
                   {{ mx | int }}
@@ -441,6 +454,13 @@ actions:
                   {%- set frac = (p - lz) / (uz - lz) -%}
                   {{ (mn + frac * (mx - mn)) | round(0) | int }}
                 {%- endif -%}
+              # echo: brightness within +/-5 AND kelvin within deadband AND within stabilization window
+              is_echo: >-
+                {{ (ls.b | default(-999) | int(-999) - new_brightness) | abs <=
+                5
+                   and (ls.k | default(-9999) | int(-9999) - target_kelvin | int) | abs
+                       <= kelvin_deadband | int
+                   and ls_age_ms <= stabilization_delay_ms | int }}
               current_kelvin: '{{ trigger.to_state.attributes.color_temp_kelvin | int(0) }}'
               kelvin_delta: '{{ (target_kelvin | int - current_kelvin | int) | abs }}'
           - choose:
@@ -448,19 +468,20 @@ actions:
                   - '{{ not is_echo }}'
                   - '{{ kelvin_delta >= kelvin_deadband | int }}'
                 sequence:
+                  # one group call: re-assert brightness alongside the new kelvin
                   - action: light.turn_on
                     target:
-                      entity_id: '{{ changed_entity }}'
+                      entity_id: !input lights
                     data:
+                      brightness: '{{ new_brightness }}'
                       color_temp_kelvin: '{{ target_kelvin | int }}'
                       transition: '{{ transition_seconds | float(0.3) }}'
                   - action: input_text.set_value
                     target:
-                      entity_id: '{{ helper_last_command }}'
+                      entity_id: '{{ helper_light_state }}'
                     data:
                       value: >-
-                        {{ {"e": changed_entity,
-                            "b": new_brightness,
+                        {{ {"b": new_brightness,
                             "k": target_kelvin | int,
                             "t": as_timestamp(now())} | to_json }}
 
@@ -484,7 +505,8 @@ actions:
                       and last_evt_raw | regex_match('^\{.*\}$')
                    else {} }}
               last_action: '{{ last_evt.a | default("") }}'
-              last_evt_age_ms: '{{ ((as_timestamp(now()) - (last_evt.t | default(0))) * 1000) | int }}'
+              last_evt_age_ms: '{{ ((as_timestamp(now()) - (last_evt.t | default(0))) * 1000)
+                | int }}'
               # dim-to-warm parameters as numerics
               lz: '{{ lower_zone_pct | float(10) }}'
               uz: '{{ upper_zone_pct | float(90) }}'
@@ -506,7 +528,8 @@ actions:
                   - choose:
                       - conditions:
                           - '{{ expose_up_double }}'
-                          - '{{ last_action == "on" and last_evt_age_ms <= double_press_window_ms | int }}'
+                          - '{{ last_action == "on" and last_evt_age_ms <=
+                            double_press_window_ms | int }}'
                         sequence:
                           - action: input_text.set_value
                             target:
@@ -530,41 +553,45 @@ actions:
                             then:
                               - delay:
                                   milliseconds: 200
-                              - repeat:
-                                  for_each: '{{ resolved_lights }}'
-                                  sequence:
-                                    # apply dim-to-warm to each light based on its current brightness
-                                    - variables:
-                                        ent: '{{ repeat.item }}'
-                                        br: '{{ state_attr(ent, "brightness") | int(0) }}'
-                                        br_pct: '{{ ((br / 255) * 100) | round(0) }}'
-                                        tk: >-
-                                          {%- set p = br_pct | float(0) -%}
-                                          {%- if p <= lz -%}
-                                            {{ mn | int }}
-                                          {%- elif p >= uz -%}
-                                            {{ mx | int }}
-                                          {%- else -%}
-                                            {%- set frac = (p - lz) / (uz - lz) -%}
-                                            {{ (mn + frac * (mx - mn)) | round(0) | int }}
-                                          {%- endif -%}
-                                    - if:
-                                        - '{{ states(ent) == "on" and br > 0 }}'
-                                      then:
-                                        - action: light.turn_on
-                                          target:
-                                            entity_id: '{{ ent }}'
-                                          data:
-                                            color_temp_kelvin: '{{ tk | int }}'
-                                            transition: '{{ transition_seconds | float(0.3) }}'
-                                        - action: input_text.set_value
-                                          target:
-                                            entity_id: '{{ helper_last_command }}'
-                                          data:
-                                            value: >-
-                                              {{ {"e": ent, "b": br,
-                                                  "k": tk | int,
-                                                  "t": as_timestamp(now())} | to_json }}
+                              # group-level: read snapshot, fall back to first light's actual brightness
+                              - variables:
+                                  ls_raw: '{{ states(helper_light_state) }}'
+                                  ls: >-
+                                    {{ (ls_raw | from_json)
+                                       if ls_raw is string
+                                          and ls_raw | regex_match('^\{.*\}$')
+                                       else {} }}
+                                  fallback_b: >-
+                                    {{ state_attr(resolved_lights[0],
+                                    "brightness")
+                                       | int(state_attr(lights, "brightness") | int(128)) }}
+                                  cur_b: '{{ ls.b | default(fallback_b) | int(fallback_b) }}'
+                                  cur_b_pct: '{{ ((cur_b / 255) * 100) | round(0) }}'
+                                  tk: >-
+                                    {%- set p = cur_b_pct | float(0) -%} {%- if
+                                    p <= lz -%}
+                                      {{ mn | int }}
+                                    {%- elif p >= uz -%}
+                                      {{ mx | int }}
+                                    {%- else -%}
+                                      {%- set frac = (p - lz) / (uz - lz) -%}
+                                      {{ (mn + frac * (mx - mn)) | round(0) | int }}
+                                    {%- endif -%}
+                              - action: light.turn_on
+                                target:
+                                  entity_id: !input lights
+                                data:
+                                  brightness: '{{ cur_b | int }}'
+                                  color_temp_kelvin: '{{ tk | int }}'
+                                  transition: '{{ transition_seconds | float(0.3) }}'
+                              - action: input_text.set_value
+                                target:
+                                  entity_id: '{{ helper_light_state }}'
+                                data:
+                                  value: >-
+                                    {{ {"b": cur_b | int,
+                                        "k": tk | int,
+                                        "t": as_timestamp(now())} | to_json }}
                     default:
                       - action: light.turn_on
                         target:
@@ -578,7 +605,8 @@ actions:
                   - choose:
                       - conditions:
                           - '{{ expose_down_double }}'
-                          - '{{ last_action == "off" and last_evt_age_ms <= double_press_window_ms | int }}'
+                          - '{{ last_action == "off" and last_evt_age_ms <=
+                            double_press_window_ms | int }}'
                         sequence:
                           - action: input_text.set_value
                             target:
@@ -604,93 +632,103 @@ actions:
                         data:
                           transition: '{{ transition_seconds | float(0.3) }}'
 
-              # --- UP long: brighten + dim-to-warm loop ---
+              # --- UP long: brighten + dim-to-warm loop (one group call per tick) ---
               - conditions: '{{ trigger_action == "brightness_move_up" }}'
                 sequence:
                   - repeat:
                       while:
                         - '{{ repeat.index <= max_loop_repeats | int }}'
                       sequence:
-                        - repeat:
-                            for_each: '{{ resolved_lights }}'
-                            sequence:
-                              - variables:
-                                  ent: '{{ repeat.item }}'
-                                  cur_br: '{{ state_attr(ent, "brightness") | int(0) }}'
-                                  cur_br_pct: '{{ ((cur_br / 255) * 100) | round(0) }}'
-                                  step: '{{ brightness_step_pct | int(10) }}'
-                                  new_pct: '{{ [cur_br_pct + step, 100] | min }}'
-                                  new_br: '{{ ((new_pct / 100) * 255) | round(0) | int }}'
-                                  tk: >-
-                                    {%- set p = new_pct | float(0) -%}
-                                    {%- if p <= lz -%}
-                                      {{ mn | int }}
-                                    {%- elif p >= uz -%}
-                                      {{ mx | int }}
-                                    {%- else -%}
-                                      {%- set frac = (p - lz) / (uz - lz) -%}
-                                      {{ (mn + frac * (mx - mn)) | round(0) | int }}
-                                    {%- endif -%}
-                              - action: light.turn_on
-                                target:
-                                  entity_id: '{{ ent }}'
-                                data:
-                                  brightness_pct: '{{ new_pct | int }}'
-                                  color_temp_kelvin: '{{ tk | int }}'
-                                  transition: '{{ (loop_delay_ms | float(250) / 1000) }}'
-                              - action: input_text.set_value
-                                target:
-                                  entity_id: '{{ helper_last_command }}'
-                                data:
-                                  value: >-
-                                    {{ {"e": ent, "b": new_br,
-                                        "k": tk | int,
-                                        "t": as_timestamp(now())} | to_json }}
+                        - variables:
+                            ls_raw: '{{ states(helper_light_state) }}'
+                            ls: >-
+                              {{ (ls_raw | from_json)
+                                 if ls_raw is string
+                                    and ls_raw | regex_match('^\{.*\}$')
+                                 else {} }}
+                            fallback_b: >-
+                              {{ state_attr(resolved_lights[0], "brightness")
+                                 | int(state_attr(lights, "brightness") | int(128)) }}
+                            cur_br: '{{ ls.b | default(fallback_b) | int(fallback_b) }}'
+                            cur_br_pct: '{{ ((cur_br / 255) * 100) | round(0) }}'
+                            step: '{{ brightness_step_pct | int(10) }}'
+                            new_pct: '{{ [cur_br_pct + step, 100] | min }}'
+                            new_br: '{{ ((new_pct / 100) * 255) | round(0) | int }}'
+                            tk: >-
+                              {%- set p = new_pct | float(0) -%} {%- if p <= lz
+                              -%}
+                                {{ mn | int }}
+                              {%- elif p >= uz -%}
+                                {{ mx | int }}
+                              {%- else -%}
+                                {%- set frac = (p - lz) / (uz - lz) -%}
+                                {{ (mn + frac * (mx - mn)) | round(0) | int }}
+                              {%- endif -%}
+                        - action: light.turn_on
+                          target:
+                            entity_id: !input lights
+                          data:
+                            brightness: '{{ new_br | int }}'
+                            color_temp_kelvin: '{{ tk | int }}'
+                            transition: '{{ (loop_delay_ms | float(250) / 1000) }}'
+                        - action: input_text.set_value
+                          target:
+                            entity_id: '{{ helper_light_state }}'
+                          data:
+                            value: >-
+                              {{ {"b": new_br | int,
+                                  "k": tk | int,
+                                  "t": as_timestamp(now())} | to_json }}
                         - delay:
                             milliseconds: '{{ loop_delay_ms | int }}'
 
-              # --- DOWN long: dim + dim-to-warm loop ---
+              # --- DOWN long: dim + dim-to-warm loop (one group call per tick) ---
               - conditions: '{{ trigger_action == "brightness_move_down" }}'
                 sequence:
                   - repeat:
                       while:
                         - '{{ repeat.index <= max_loop_repeats | int }}'
                       sequence:
-                        - repeat:
-                            for_each: '{{ resolved_lights }}'
-                            sequence:
-                              - variables:
-                                  ent: '{{ repeat.item }}'
-                                  cur_br: '{{ state_attr(ent, "brightness") | int(0) }}'
-                                  cur_br_pct: '{{ ((cur_br / 255) * 100) | round(0) }}'
-                                  step: '{{ brightness_step_pct | int(10) }}'
-                                  new_pct: '{{ [cur_br_pct - step, 1] | max }}'
-                                  new_br: '{{ ((new_pct / 100) * 255) | round(0) | int }}'
-                                  tk: >-
-                                    {%- set p = new_pct | float(0) -%}
-                                    {%- if p <= lz -%}
-                                      {{ mn | int }}
-                                    {%- elif p >= uz -%}
-                                      {{ mx | int }}
-                                    {%- else -%}
-                                      {%- set frac = (p - lz) / (uz - lz) -%}
-                                      {{ (mn + frac * (mx - mn)) | round(0) | int }}
-                                    {%- endif -%}
-                              - action: light.turn_on
-                                target:
-                                  entity_id: '{{ ent }}'
-                                data:
-                                  brightness_pct: '{{ new_pct | int }}'
-                                  color_temp_kelvin: '{{ tk | int }}'
-                                  transition: '{{ (loop_delay_ms | float(250) / 1000) }}'
-                              - action: input_text.set_value
-                                target:
-                                  entity_id: '{{ helper_last_command }}'
-                                data:
-                                  value: >-
-                                    {{ {"e": ent, "b": new_br,
-                                        "k": tk | int,
-                                        "t": as_timestamp(now())} | to_json }}
+                        - variables:
+                            ls_raw: '{{ states(helper_light_state) }}'
+                            ls: >-
+                              {{ (ls_raw | from_json)
+                                 if ls_raw is string
+                                    and ls_raw | regex_match('^\{.*\}$')
+                                 else {} }}
+                            fallback_b: >-
+                              {{ state_attr(resolved_lights[0], "brightness")
+                                 | int(state_attr(lights, "brightness") | int(128)) }}
+                            cur_br: '{{ ls.b | default(fallback_b) | int(fallback_b) }}'
+                            cur_br_pct: '{{ ((cur_br / 255) * 100) | round(0) }}'
+                            step: '{{ brightness_step_pct | int(10) }}'
+                            new_pct: '{{ [cur_br_pct - step, 1] | max }}'
+                            new_br: '{{ ((new_pct / 100) * 255) | round(0) | int }}'
+                            tk: >-
+                              {%- set p = new_pct | float(0) -%} {%- if p <= lz
+                              -%}
+                                {{ mn | int }}
+                              {%- elif p >= uz -%}
+                                {{ mx | int }}
+                              {%- else -%}
+                                {%- set frac = (p - lz) / (uz - lz) -%}
+                                {{ (mn + frac * (mx - mn)) | round(0) | int }}
+                              {%- endif -%}
+                        - action: light.turn_on
+                          target:
+                            entity_id: !input lights
+                          data:
+                            brightness: '{{ new_br | int }}'
+                            color_temp_kelvin: '{{ tk | int }}'
+                            transition: '{{ (loop_delay_ms | float(250) / 1000) }}'
+                        - action: input_text.set_value
+                          target:
+                            entity_id: '{{ helper_light_state }}'
+                          data:
+                            value: >-
+                              {{ {"b": new_br | int,
+                                  "k": tk | int,
+                                  "t": as_timestamp(now())} | to_json }}
                         - delay:
                             milliseconds: '{{ loop_delay_ms | int }}'
 
@@ -705,7 +743,8 @@ actions:
                   - choose:
                       - conditions:
                           - '{{ expose_left_double }}'
-                          - '{{ last_action == "arrow_left_click" and last_evt_age_ms <= double_press_window_ms | int }}'
+                          - '{{ last_action == "arrow_left_click" and
+                            last_evt_age_ms <= double_press_window_ms | int }}'
                         sequence:
                           - action: input_text.set_value
                             target:
@@ -747,7 +786,8 @@ actions:
                   - choose:
                       - conditions:
                           - '{{ expose_right_double }}'
-                          - '{{ last_action == "arrow_right_click" and last_evt_age_ms <= double_press_window_ms | int }}'
+                          - '{{ last_action == "arrow_right_click" and
+                            last_evt_age_ms <= double_press_window_ms | int }}'
                         sequence:
                           - action: input_text.set_value
                             target:
