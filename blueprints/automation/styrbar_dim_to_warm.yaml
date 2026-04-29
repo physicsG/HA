@@ -19,12 +19,12 @@ blueprint:
   name: "Styrbar (Z2M) — Controller"
   description: >
     Simplified Zigbee2MQTT controller automation for the IKEA STYRBAR
-    (E2001/E2002). Exposes action slots for short, long, release and
-    optional virtual double-press on each of the four arrow buttons,
-    plus optional looping while the long-press is held.
+    (E2001/E2002). Exposes action slots for short, long, release and optional
+    virtual double-press on each of the four arrow buttons, plus optional
+    looping while the long-press is held.
 
-    Requires a single input_text helper used to detect double-press
-    and to know which button is being held during a release event.
+    Requires a single input_text helper used to detect double-press and to know
+    which button is being held during a release event.
   domain: automation
   homeassistant:
     min_version: "2024.10.0"
@@ -45,9 +45,9 @@ blueprint:
     helper_last_controller_event:
       name: "Helper — Last controller event"
       description: >
-        input_text used to remember the last button event so double-press
-        and release-after-hold can be detected. Create this manually
-        under Settings → Devices & services → Helpers.
+        input_text used to remember the last button event so double-press and
+        release-after-hold can be detected. Create this manually under Settings
+        → Devices & services → Helpers.
       selector:
         entity:
           domain: input_text
@@ -56,9 +56,9 @@ blueprint:
     target_lights:
       name: "Target light(s)"
       description: >
-        Light(s) controlled by the Up/Down buttons. The new color
-        temperature is computed from the new brightness and written
-        with it in a single light.turn_on call.
+        Light(s) controlled by the Up/Down buttons. The new color temperature is
+        computed from the new brightness and written with it in a single
+        light.turn_on call.
       selector:
         entity:
           domain: light
@@ -66,9 +66,9 @@ blueprint:
     helper_state:
       name: "Helper — Dim/Kelvin state"
       description: >
-        input_text storing the last commanded brightness and kelvin as
-        JSON, e.g. {"b":180,"k":2700}. Create this manually under
-        Settings → Devices & services → Helpers.
+        input_text storing the last commanded brightness and kelvin as JSON,
+        e.g. {"b":180,"k":2700}. Create this manually under Settings → Devices &
+        services → Helpers.
       selector:
         entity:
           domain: input_text
@@ -254,8 +254,7 @@ blueprint:
     helper_debounce_delay:
       name: "Helper — Debounce delay (ms)"
       description: >
-        Set to 0 to disable. If you see actions firing twice per press,
-        try 100.
+        Set to 0 to disable. If you see actions firing twice per press, try 100.
       default: 0
       selector:
         number:
@@ -273,7 +272,8 @@ variables:
   helper_double_press_delay: !input helper_double_press_delay
   helper_debounce_delay: !input helper_debounce_delay
   long_press_max_loop_repeats: !input long_press_max_loop_repeats
-  adjusted_double_press_delay: "{{ [(helper_double_press_delay | int) - (helper_debounce_delay | int), 100] | max }}"
+  adjusted_double_press_delay: "{{ [(helper_double_press_delay | int) -
+    (helper_debounce_delay | int), 100] | max }}"
   button_left_long_loop: !input button_left_long_loop
   button_right_long_loop: !input button_right_long_loop
   button_up_long_loop: !input button_up_long_loop
@@ -363,36 +363,48 @@ triggers:
 #  Actions
 # ═══════════════════════════════════════════════════════════════
 actions:
+  # ====== STEP 1 — Read the previous event helper FIRST (before    ======
+  # ====== overwriting), but make the read defensively bullet-proof ======
+  # ====== so any template error returns empty instead of aborting. ======
+  - variables:
+      trigger_action_final: "{{ (trigger.payload | default('')) | string }}"
+      _raw_helper: "{{ states(helper_last_controller_event) | default('', true) | string }}"
+      last_controller_event: >-
+        {% set p = (_raw_helper | from_json) if (_raw_helper.startswith('{') and
+        _raw_helper.endswith('}')) else {} %} {{ p.a | default('') }}
+      last_controller_event_t: >-
+        {% set p = (_raw_helper | from_json) if (_raw_helper.startswith('{') and
+        _raw_helper.endswith('}')) else {} %} {{ p.t | default(0) | float(0) }}
+      trigger_delta: "{{ ((as_timestamp(now()) - (last_controller_event_t | float(0)))
+        * 1000) | int }}"
+
+  # ====== STEP 2 — Unconditional helper write. This is the FIRST  ======
+  # ====== service call so a later template error can't suppress it.======
+  - action: input_text.set_value
+    target:
+      entity_id: !input helper_last_controller_event
+    data:
+      value: "{{ {'a': trigger_action_final, 't': as_timestamp(now())} | to_json }}"
+
   # Optional debounce — shorter parallel runs are killed by mode:restart
   # before this delay expires; only the latest one continues.
   - delay:
       milliseconds: "{{ helper_debounce_delay | int }}"
 
+  # Dim-to-warm state, computed defensively (any error -> defaults).
   - variables:
-      # Z2M MQTT device triggers expose the action string via trigger.payload.
-      trigger_action_final: "{{ trigger.payload | default('') | string }}"
-      raw_helper: "{{ states(helper_last_controller_event) | string }}"
-      parsed_helper: >-
-        {{ (raw_helper | from_json) if (raw_helper.startswith('{') and raw_helper.endswith('}')) else {} }}
-      last_controller_event: "{{ parsed_helper.a | default('') }}"
-      last_controller_event_t: "{{ parsed_helper.t | default(0) | float(0) }}"
-      trigger_delta: "{{ ((as_timestamp(now()) - last_controller_event_t) * 1000) | int }}"
-      raw_state: "{{ states(v_helper_state) | string }}"
-      parsed_state: >-
-        {{ (raw_state | from_json) if (raw_state.startswith('{') and raw_state.endswith('}')) else {} }}
-      cur_b: "{{ parsed_state.b | default(v_default_brightness, true) | int }}"
-      cur_k_default: "{{ ((v_min_kelvin | int + v_max_kelvin | int) / 2) | int }}"
-      cur_k: "{{ parsed_state.k | default(cur_k_default, true) | int }}"
-      any_on: "{{ v_target_lights | map('states') | select('eq', 'on') | list | count > 0 }}"
-
-  # Always update the helper with the raw event so release/double-press
-  # logic in subsequent runs has something to read.
-  - action: input_text.set_value
-    target:
-      entity_id: !input helper_last_controller_event
-    data:
-      value: >-
-        {{ {'a': trigger_action_final, 't': as_timestamp(now())} | to_json }}
+      _raw_state: "{{ states(v_helper_state) | default('', true) | string }}"
+      cur_b: >-
+        {% set p = (_raw_state | from_json) if (_raw_state.startswith('{') and
+        _raw_state.endswith('}')) else {} %} {{ p.b |
+        default(v_default_brightness, true) | int }}
+      cur_k: >-
+        {% set p = (_raw_state | from_json) if (_raw_state.startswith('{') and
+        _raw_state.endswith('}')) else {} %} {% set kdef = ((v_min_kelvin | int
+        + v_max_kelvin | int) / 2) | int %} {{ p.k | default(kdef, true) | int
+        }}
+      any_on: "{{ v_target_lights | map('states') | select('eq', 'on') | list | count
+        > 0 }}"
 
   - choose:
       # ════ LEFT short ════
@@ -404,7 +416,8 @@ actions:
                   - choose:
                       - conditions:
                           - "{{ last_controller_event == 'arrow_left_click' }}"
-                          - "{{ trigger_delta <= (helper_double_press_delay | int) }}"
+                          - "{{ trigger_delta <= (helper_double_press_delay |
+                            int) }}"
                         sequence:
                           - action: input_text.set_value
                             target:
@@ -439,7 +452,8 @@ actions:
       # ════ LEFT release ════
       - conditions:
           - "{{ trigger_action_final == 'arrow_left_release' }}"
-          - "{{ last_controller_event in ['arrow_left_hold', 'arrow_left_release'] }}"
+          - "{{ last_controller_event in ['arrow_left_hold',
+            'arrow_left_release'] }}"
         sequence:
           - choose:
               - conditions: []
@@ -454,7 +468,8 @@ actions:
                   - choose:
                       - conditions:
                           - "{{ last_controller_event == 'arrow_right_click' }}"
-                          - "{{ trigger_delta <= (helper_double_press_delay | int) }}"
+                          - "{{ trigger_delta <= (helper_double_press_delay |
+                            int) }}"
                         sequence:
                           - action: input_text.set_value
                             target:
@@ -489,7 +504,8 @@ actions:
       # ════ RIGHT release ════
       - conditions:
           - "{{ trigger_action_final == 'arrow_right_release' }}"
-          - "{{ last_controller_event in ['arrow_right_hold', 'arrow_right_release'] }}"
+          - "{{ last_controller_event in ['arrow_right_hold',
+            'arrow_right_release'] }}"
         sequence:
           - choose:
               - conditions: []
@@ -504,7 +520,8 @@ actions:
                   - choose:
                       - conditions:
                           - "{{ last_controller_event == 'on' }}"
-                          - "{{ trigger_delta <= (helper_double_press_delay | int) }}"
+                          - "{{ trigger_delta <= (helper_double_press_delay |
+                            int) }}"
                         sequence:
                           - action: input_text.set_value
                             target:
@@ -538,7 +555,9 @@ actions:
                         default:
                           - variables:
                               new_b: "{{ [[(cur_b | int) + (v_bright_step | int), 255] | min, 1] | max }}"
-                              new_k: "{{ ((v_min_kelvin | int) + ((new_b | int - 1) / 254) * ((v_max_kelvin | int) - (v_min_kelvin | int))) | round(0) | int }}"
+                              new_k: "{{ ((v_min_kelvin | int) + ((new_b | int - 1) / 254) * ((v_max_kelvin |
+                                int) - (v_min_kelvin | int))) | round(0) | int
+                                }}"
                           - action: light.turn_on
                             target:
                               entity_id: !input target_lights
@@ -573,7 +592,8 @@ actions:
                 default:
                   - variables:
                       new_b: "{{ [[(cur_b | int) + (v_bright_step | int), 255] | min, 1] | max }}"
-                      new_k: "{{ ((v_min_kelvin | int) + ((new_b | int - 1) / 254) * ((v_max_kelvin | int) - (v_min_kelvin | int))) | round(0) | int }}"
+                      new_k: "{{ ((v_min_kelvin | int) + ((new_b | int - 1) / 254) * ((v_max_kelvin |
+                        int) - (v_min_kelvin | int))) | round(0) | int }}"
                   - action: light.turn_on
                     target:
                       entity_id: !input target_lights
@@ -601,10 +621,14 @@ actions:
                 - variables:
                     raw_state_l: "{{ states(v_helper_state) | string }}"
                     parsed_state_l: >-
-                      {{ (raw_state_l | from_json) if (raw_state_l.startswith('{') and raw_state_l.endswith('}')) else {} }}
+                      {{ (raw_state_l | from_json) if
+                      (raw_state_l.startswith('{') and
+                      raw_state_l.endswith('}')) else {} }}
                     iter_b: "{{ parsed_state_l.b | default(v_default_brightness, true) | int }}"
                     iter_b_new: "{{ [[iter_b + (v_bright_step | int), 255] | min, 1] | max }}"
-                    iter_k_new: "{{ ((v_min_kelvin | int) + ((iter_b_new | int - 1) / 254) * ((v_max_kelvin | int) - (v_min_kelvin | int))) | round(0) | int }}"
+                    iter_k_new: "{{ ((v_min_kelvin | int) + ((iter_b_new | int - 1) / 254) *
+                      ((v_max_kelvin | int) - (v_min_kelvin | int))) | round(0)
+                      | int }}"
                 - action: light.turn_on
                   target:
                     entity_id: !input target_lights
@@ -629,7 +653,8 @@ actions:
                   - choose:
                       - conditions:
                           - "{{ last_controller_event == 'off' }}"
-                          - "{{ trigger_delta <= (helper_double_press_delay | int) }}"
+                          - "{{ trigger_delta <= (helper_double_press_delay |
+                            int) }}"
                         sequence:
                           - action: input_text.set_value
                             target:
@@ -661,7 +686,9 @@ actions:
                                 default:
                                   - variables:
                                       new_b: "{{ [new_b_raw | int, 1] | max }}"
-                                      new_k: "{{ ((v_min_kelvin | int) + ((new_b | int - 1) / 254) * ((v_max_kelvin | int) - (v_min_kelvin | int))) | round(0) | int }}"
+                                      new_k: "{{ ((v_min_kelvin | int) + ((new_b | int - 1) / 254) * ((v_max_kelvin |
+                                        int) - (v_min_kelvin | int))) | round(0)
+                                        | int }}"
                                   - action: light.turn_on
                                     target:
                                       entity_id: !input target_lights
@@ -694,7 +721,9 @@ actions:
                         default:
                           - variables:
                               new_b: "{{ [new_b_raw | int, 1] | max }}"
-                              new_k: "{{ ((v_min_kelvin | int) + ((new_b | int - 1) / 254) * ((v_max_kelvin | int) - (v_min_kelvin | int))) | round(0) | int }}"
+                              new_k: "{{ ((v_min_kelvin | int) + ((new_b | int - 1) / 254) * ((v_max_kelvin |
+                                int) - (v_min_kelvin | int))) | round(0) | int
+                                }}"
                           - action: light.turn_on
                             target:
                               entity_id: !input target_lights
@@ -719,17 +748,21 @@ actions:
               while:
                 - "{{ repeat.index < (long_press_max_loop_repeats | int) }}"
                 - >-
-                  {% set s = states(v_helper_state) | string %}
-                  {% set p = (s | from_json) if (s.startswith('{') and s.endswith('}')) else {} %}
-                  {{ (p.b | default(255) | int) > 1 }}
+                  {% set s = states(v_helper_state) | string %} {% set p = (s |
+                  from_json) if (s.startswith('{') and s.endswith('}')) else {}
+                  %} {{ (p.b | default(255) | int) > 1 }}
               sequence:
                 - variables:
                     raw_state_l: "{{ states(v_helper_state) | string }}"
                     parsed_state_l: >-
-                      {{ (raw_state_l | from_json) if (raw_state_l.startswith('{') and raw_state_l.endswith('}')) else {} }}
+                      {{ (raw_state_l | from_json) if
+                      (raw_state_l.startswith('{') and
+                      raw_state_l.endswith('}')) else {} }}
                     iter_b: "{{ parsed_state_l.b | default(v_default_brightness, true) | int }}"
                     iter_b_new: "{{ [iter_b - (v_bright_step | int), 1] | max }}"
-                    iter_k_new: "{{ ((v_min_kelvin | int) + ((iter_b_new | int - 1) / 254) * ((v_max_kelvin | int) - (v_min_kelvin | int))) | round(0) | int }}"
+                    iter_k_new: "{{ ((v_min_kelvin | int) + ((iter_b_new | int - 1) / 254) *
+                      ((v_max_kelvin | int) - (v_min_kelvin | int))) | round(0)
+                      | int }}"
                 - action: light.turn_on
                   target:
                     entity_id: !input target_lights
@@ -748,7 +781,8 @@ actions:
       # ════ UP/DOWN release (shared brightness_stop event) ════
       - conditions:
           - "{{ trigger_action_final == 'brightness_stop' }}"
-          - "{{ last_controller_event in ['brightness_move_up', 'brightness_stop'] }}"
+          - "{{ last_controller_event in ['brightness_move_up',
+            'brightness_stop'] }}"
         sequence:
           - choose:
               - conditions: []
