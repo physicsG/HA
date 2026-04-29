@@ -1,280 +1,223 @@
-# Styrbar (Z2M) — Dim to Warm
+# Styrbar (Z2M) — simplified controller
 #
-# A simplified, self-contained controller automation for an IKEA STYRBAR
-# (E2001/E2002) over Zigbee2MQTT, paired with a dim-to-warm engine.
+# Z2M-only port of the upstream IKEA E2001/E2002 STYRBAR controller
+# blueprint, trimmed to just one integration and one device. Exposes
+# bare action slots for short / long / release / double on all four
+# buttons, optional long-press looping, and optional virtual
+# double-press detection (per-button opt in).
 #
-# This blueprint is the *only* thing changing the target light(s). On
-# every press it computes the new brightness AND the new color
-# temperature from the previously commanded values stored in a helper
-# (input_text), then writes both to all target lights in a single
-# light.turn_on call. Color temperature follows brightness linearly:
-# brighter -> cooler (max kelvin), dimmer -> warmer (min kelvin).
-#
-# Up/Down drive the dim-to-warm engine. Left/Right are exposed as bare
-# action slots so you can wire scenes / scripts / nothing.
+# Pair it with a separate script/automation if you want dim-to-warm
+# behaviour — keep this blueprint dumb so the controller half is easy
+# to debug.
 #
 # Adapted from:
-#   - https://github.com/EPMatt/awesome-ha-blueprints
-#       (Controller - IKEA E2001/E2002 STYRBAR Remote control, MIT)
-#   - https://github.com/robblids/ha-dim-to-warm
-#       (Dim to Warm, MIT)
+#   https://github.com/EPMatt/awesome-ha-blueprints
+#   blueprints/controllers/ikea_e2001_e2002/ikea_e2001_e2002.yaml
+#   (MIT, EPMatt). Trimmed to Zigbee2MQTT only.
 
 blueprint:
-  name: "Styrbar (Z2M) — Dim to Warm"
+  name: "Styrbar (Z2M) — Controller"
   description: >
-    IKEA STYRBAR (Z2M) controller with built-in dim-to-warm.
+    Simplified Zigbee2MQTT controller automation for the IKEA STYRBAR
+    (E2001/E2002). Exposes action slots for short, long, release and
+    optional virtual double-press on each of the four arrow buttons,
+    plus optional looping while the long-press is held.
 
-    Up/Down short-press steps brightness; long-press loops the step
-    until release. The new color temperature is computed from the new
-    brightness using a linear curve between Min Kelvin (warmest) and
-    Max Kelvin (coolest). Brightness and kelvin are written together
-    in one call.
-
-    Left/Right (short, long, release) are exposed as bare action slots.
-    Double-press is supported on all four buttons (opt in per button).
-
-    Requires two input_text helpers — one for the dim/kelvin state, one
-    for double-press detection / long-press release signalling.
+    Requires a single input_text helper used to detect double-press
+    and to know which button is being held during a release event.
   domain: automation
   homeassistant:
     min_version: "2024.10.0"
   input:
-    device_section:
-      name: "Device & lights"
-      icon: mdi:remote
-      collapsed: false
-      input:
-        controller_device:
-          name: "STYRBAR remote (Z2M)"
-          description: "The Zigbee2MQTT STYRBAR device."
-          selector:
-            device:
-              filter:
-                - integration: mqtt
-                  manufacturer: IKEA
-                  model: STYRBAR remote control
-                - integration: mqtt
-                  manufacturer: IKEA
-                  model: STYRBAR remote control (E2001/E2002)
-              multiple: false
-        target_lights:
-          name: "Target light(s)"
-          description: >
-            One or more lights, or a light group. All targets are
-            commanded together with the same brightness and kelvin.
-          selector:
-            entity:
-              domain: light
-              multiple: true
-
-    helper_section:
-      name: "Helpers"
-      icon: mdi:database
+    controller_device:
+      name: "STYRBAR remote (Z2M)"
+      description: "The Zigbee2MQTT STYRBAR device."
+      selector:
+        device:
+          filter:
+            - integration: mqtt
+              manufacturer: IKEA
+              model: STYRBAR remote control
+            - integration: mqtt
+              manufacturer: IKEA
+              model: STYRBAR remote control (E2001/E2002)
+          multiple: false
+    helper_last_controller_event:
+      name: "Helper — Last controller event"
       description: >
-        Two input_text helpers are required. Create them in
-        Settings → Devices & services → Helpers (default 100-char
-        max length is fine for both).
-      collapsed: false
-      input:
-        helper_state:
-          name: "Helper — Dim/Kelvin state"
-          description: >
-            input_text storing the last commanded brightness and
-            kelvin as JSON, e.g. {"b":180,"k":2700}.
-          selector:
-            entity:
-              domain: input_text
-        helper_last_controller_event:
-          name: "Helper — Last controller event"
-          description: >
-            input_text used to detect double-press and to signal
-            the long-press release to the hold loop.
-          selector:
-            entity:
-              domain: input_text
+        input_text used to remember the last button event so double-press
+        and release-after-hold can be detected. Create this manually
+        under Settings → Devices & services → Helpers.
+      selector:
+        entity:
+          domain: input_text
 
-    curve_section:
-      name: "Dim-to-warm curve"
-      icon: mdi:chart-bell-curve
-      collapsed: false
-      input:
-        min_kelvin:
-          name: "Min Kelvin (at lowest brightness)"
-          default: 2200
-          selector:
-            color_temp:
-              unit: kelvin
-              min: 1800
-              max: 6500
-        max_kelvin:
-          name: "Max Kelvin (at full brightness)"
-          default: 4000
-          selector:
-            color_temp:
-              unit: kelvin
-              min: 1800
-              max: 6500
+    # ── Action slots ─────────────────────────────────────────
+    action_button_left_short:
+      name: "Left — short press"
+      default: []
+      selector: { action: {} }
+    action_button_left_long:
+      name: "Left — long press (hold)"
+      default: []
+      selector: { action: {} }
+    action_button_left_release:
+      name: "Left — release after hold"
+      default: []
+      selector: { action: {} }
+    action_button_left_double:
+      name: "Left — double press (virtual)"
+      default: []
+      selector: { action: {} }
 
-    behavior_section:
-      name: "Stepping & timing"
-      icon: mdi:cog
-      collapsed: true
-      input:
-        bright_step:
-          name: "Brightness step (0–255 units)"
-          description: "Amount added/subtracted per short press or per hold tick."
-          default: 25
-          selector:
-            number:
-              min: 5
-              max: 64
-              step: 1
-              mode: slider
-        long_press_interval_ms:
-          name: "Long-press tick interval"
-          default: 400
-          selector:
-            number:
-              min: 100
-              max: 2000
-              step: 50
-              unit_of_measurement: ms
-              mode: slider
-        long_press_max_ticks:
-          name: "Long-press max ticks (safety cap)"
-          default: 60
-          selector:
-            number:
-              min: 5
-              max: 500
-              step: 1
-              mode: box
-        transition:
-          name: "Transition (s)"
-          default: 0.3
-          selector:
-            number:
-              min: 0
-              max: 5
-              step: 0.1
-              unit_of_measurement: s
-              mode: slider
-        default_brightness:
-          name: "Default brightness when helper is empty"
-          description: "Used when turning on with no prior stored state."
-          default: 200
-          selector:
-            number:
-              min: 1
-              max: 255
-              step: 1
-              mode: slider
+    action_button_right_short:
+      name: "Right — short press"
+      default: []
+      selector: { action: {} }
+    action_button_right_long:
+      name: "Right — long press (hold)"
+      default: []
+      selector: { action: {} }
+    action_button_right_release:
+      name: "Right — release after hold"
+      default: []
+      selector: { action: {} }
+    action_button_right_double:
+      name: "Right — double press (virtual)"
+      default: []
+      selector: { action: {} }
 
-    doublepress_section:
-      name: "Double-press"
-      icon: mdi:gesture-double-tap
-      collapsed: true
-      input:
-        button_left_double_press:
-          name: "Expose left double-press"
-          default: false
-          selector: { boolean: {} }
-        button_right_double_press:
-          name: "Expose right double-press"
-          default: false
-          selector: { boolean: {} }
-        button_up_double_press:
-          name: "Expose up double-press"
-          default: false
-          selector: { boolean: {} }
-        button_down_double_press:
-          name: "Expose down double-press"
-          default: false
-          selector: { boolean: {} }
-        helper_double_press_delay:
-          name: "Double-press window"
-          default: 500
-          selector:
-            number:
-              min: 100
-              max: 2000
-              step: 10
-              unit_of_measurement: ms
-              mode: box
+    action_button_up_short:
+      name: "Up — short press"
+      default: []
+      selector: { action: {} }
+    action_button_up_long:
+      name: "Up — long press (hold)"
+      default: []
+      selector: { action: {} }
+    action_button_up_release:
+      name: "Up — release after hold"
+      default: []
+      selector: { action: {} }
+    action_button_up_double:
+      name: "Up — double press (virtual)"
+      default: []
+      selector: { action: {} }
 
-    actions_section:
-      name: "Left / Right actions"
-      icon: mdi:gesture-tap
-      description: "Bare action slots — Up/Down are reserved for dim-to-warm."
-      collapsed: true
-      input:
-        action_button_left_short:
-          name: "Left — short"
-          default: []
-          selector: { action: {} }
-        action_button_left_long:
-          name: "Left — long (hold)"
-          default: []
-          selector: { action: {} }
-        action_button_left_release:
-          name: "Left — release"
-          default: []
-          selector: { action: {} }
-        action_button_left_double:
-          name: "Left — double"
-          default: []
-          selector: { action: {} }
-        action_button_right_short:
-          name: "Right — short"
-          default: []
-          selector: { action: {} }
-        action_button_right_long:
-          name: "Right — long (hold)"
-          default: []
-          selector: { action: {} }
-        action_button_right_release:
-          name: "Right — release"
-          default: []
-          selector: { action: {} }
-        action_button_right_double:
-          name: "Right — double"
-          default: []
-          selector: { action: {} }
-        action_button_up_double:
-          name: "Up — double"
-          default: []
-          selector: { action: {} }
-        action_button_down_double:
-          name: "Down — double"
-          default: []
-          selector: { action: {} }
+    action_button_down_short:
+      name: "Down — short press"
+      default: []
+      selector: { action: {} }
+    action_button_down_long:
+      name: "Down — long press (hold)"
+      default: []
+      selector: { action: {} }
+    action_button_down_release:
+      name: "Down — release after hold"
+      default: []
+      selector: { action: {} }
+    action_button_down_double:
+      name: "Down — double press (virtual)"
+      default: []
+      selector: { action: {} }
 
-mode: parallel
-max: 10
+    # ── Long-press looping ──────────────────────────────────
+    button_left_long_loop:
+      name: "Left — loop long press"
+      default: false
+      selector: { boolean: {} }
+    button_right_long_loop:
+      name: "Right — loop long press"
+      default: false
+      selector: { boolean: {} }
+    button_up_long_loop:
+      name: "Up — loop long press"
+      default: false
+      selector: { boolean: {} }
+    button_down_long_loop:
+      name: "Down — loop long press"
+      default: false
+      selector: { boolean: {} }
+    long_press_max_loop_repeats:
+      name: "Long-press max loop repeats (safety cap)"
+      default: 500
+      selector:
+        number:
+          min: 1
+          max: 5000
+          step: 1
+          mode: slider
+
+    # ── Double-press toggles ────────────────────────────────
+    button_left_double_press:
+      name: "Expose left double-press"
+      default: false
+      selector: { boolean: {} }
+    button_right_double_press:
+      name: "Expose right double-press"
+      default: false
+      selector: { boolean: {} }
+    button_up_double_press:
+      name: "Expose up double-press"
+      default: false
+      selector: { boolean: {} }
+    button_down_double_press:
+      name: "Expose down double-press"
+      default: false
+      selector: { boolean: {} }
+
+    helper_double_press_delay:
+      name: "Helper — Double-press window (ms)"
+      default: 500
+      selector:
+        number:
+          min: 100
+          max: 5000
+          step: 10
+          unit_of_measurement: ms
+          mode: box
+    helper_debounce_delay:
+      name: "Helper — Debounce delay (ms)"
+      description: >
+        Set to 0 to disable. If you see actions firing twice per press,
+        try 100.
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 1000
+          step: 10
+          unit_of_measurement: ms
+          mode: box
+
+# ═══════════════════════════════════════════════════════════════
+#  Variables
+# ═══════════════════════════════════════════════════════════════
+variables:
+  helper_last_controller_event: !input helper_last_controller_event
+  helper_double_press_delay: !input helper_double_press_delay
+  helper_debounce_delay: !input helper_debounce_delay
+  long_press_max_loop_repeats: !input long_press_max_loop_repeats
+  adjusted_double_press_delay: "{{ [(helper_double_press_delay | int) - (helper_debounce_delay | int), 100] | max }}"
+  button_left_long_loop: !input button_left_long_loop
+  button_right_long_loop: !input button_right_long_loop
+  button_up_long_loop: !input button_up_long_loop
+  button_down_long_loop: !input button_down_long_loop
+  button_left_double_press: !input button_left_double_press
+  button_right_double_press: !input button_right_double_press
+  button_up_double_press: !input button_up_double_press
+  button_down_double_press: !input button_down_double_press
+  controller_id: !input controller_device
+
+# ═══════════════════════════════════════════════════════════════
+#  Mode — restart so a new press cancels the in-flight wait
+#  used for double-press detection (matches upstream behaviour).
+# ═══════════════════════════════════════════════════════════════
+mode: restart
 max_exceeded: silent
 
 # ═══════════════════════════════════════════════════════════════
-#  Variables — single-expression templates so native types are kept
-# ═══════════════════════════════════════════════════════════════
-variables:
-  v_target_lights: !input target_lights
-  v_helper_state: !input helper_state
-  v_helper_event: !input helper_last_controller_event
-  v_min_kelvin: !input min_kelvin
-  v_max_kelvin: !input max_kelvin
-  v_bright_step: !input bright_step
-  v_long_interval: !input long_press_interval_ms
-  v_long_max_ticks: !input long_press_max_ticks
-  v_transition: !input transition
-  v_default_brightness: !input default_brightness
-  v_double_delay: !input helper_double_press_delay
-  v_btn_left_dp: !input button_left_double_press
-  v_btn_right_dp: !input button_right_double_press
-  v_btn_up_dp: !input button_up_double_press
-  v_btn_down_dp: !input button_down_double_press
-
-# ═══════════════════════════════════════════════════════════════
-#  Triggers — Z2M MQTT device actions
+#  Triggers — Z2M MQTT device actions only
 # ═══════════════════════════════════════════════════════════════
 triggers:
   - trigger: device
@@ -282,456 +225,288 @@ triggers:
     device_id: !input controller_device
     type: action
     subtype: arrow_left_click
-    id: left_short
   - trigger: device
     domain: mqtt
     device_id: !input controller_device
     type: action
     subtype: arrow_left_hold
-    id: left_long
   - trigger: device
     domain: mqtt
     device_id: !input controller_device
     type: action
     subtype: arrow_left_release
-    id: left_release
   - trigger: device
     domain: mqtt
     device_id: !input controller_device
     type: action
     subtype: arrow_right_click
-    id: right_short
   - trigger: device
     domain: mqtt
     device_id: !input controller_device
     type: action
     subtype: arrow_right_hold
-    id: right_long
   - trigger: device
     domain: mqtt
     device_id: !input controller_device
     type: action
     subtype: arrow_right_release
-    id: right_release
   - trigger: device
     domain: mqtt
     device_id: !input controller_device
     type: action
     subtype: "on"
-    id: up_short
   - trigger: device
     domain: mqtt
     device_id: !input controller_device
     type: action
     subtype: brightness_move_up
-    id: up_long
-  - trigger: device
-    domain: mqtt
-    device_id: !input controller_device
-    type: action
-    subtype: "off"
-    id: down_short
-  - trigger: device
-    domain: mqtt
-    device_id: !input controller_device
-    type: action
-    subtype: brightness_move_down
-    id: down_long
   - trigger: device
     domain: mqtt
     device_id: !input controller_device
     type: action
     subtype: brightness_stop
-    id: ud_release
+  - trigger: device
+    domain: mqtt
+    device_id: !input controller_device
+    type: action
+    subtype: "off"
+  - trigger: device
+    domain: mqtt
+    device_id: !input controller_device
+    type: action
+    subtype: brightness_move_down
 
 # ═══════════════════════════════════════════════════════════════
 #  Actions
 # ═══════════════════════════════════════════════════════════════
 actions:
-  # 1) Decode helper state and capture the *previous* event helper
-  #    BEFORE we overwrite it. Each variable is a single {{ ... }}
-  #    expression so HA native templating keeps real types.
-  - variables:
-      raw_state: "{{ states(v_helper_state) | string }}"
-      parsed_state: >-
-        {{ (raw_state | from_json) if (raw_state.startswith('{') and raw_state.endswith('}')) else {} }}
-      cur_b: "{{ parsed_state.b | default(v_default_brightness, true) | int }}"
-      cur_k_default: "{{ ((v_min_kelvin | int + v_max_kelvin | int) / 2) | int }}"
-      cur_k: "{{ parsed_state.k | default(cur_k_default, true) | int }}"
-      raw_event: "{{ states(v_helper_event) | string }}"
-      parsed_event: >-
-        {{ (raw_event | from_json) if (raw_event.startswith('{') and raw_event.endswith('}')) else {} }}
-      last_event: "{{ parsed_event.a | default('') }}"
-      last_event_t: "{{ parsed_event.t | default(0) | float(0) }}"
-      trigger_delta_ms: "{{ ((as_timestamp(now()) - last_event_t) * 1000) | int }}"
-      any_on: "{{ v_target_lights | map('states') | select('eq', 'on') | list | count > 0 }}"
+  # Optional debounce — shorter parallel runs are killed by mode:restart
+  # before this delay expires; only the latest one continues.
+  - delay:
+      milliseconds: "{{ helper_debounce_delay | int }}"
 
-  # 2) Now overwrite the event helper with the current trigger so
-  #    the long-press hold loop can detect release, and so the next
-  #    invocation can detect double-press.
+  - variables:
+      trigger_action: "{{ trigger.event.data.payload | default(trigger.payload) | default('') }}"
+      raw_helper: "{{ states(helper_last_controller_event) | string }}"
+      parsed_helper: >-
+        {{ (raw_helper | from_json) if (raw_helper.startswith('{') and raw_helper.endswith('}')) else {} }}
+      last_controller_event: "{{ parsed_helper.a | default('') }}"
+      last_controller_event_t: "{{ parsed_helper.t | default(0) | float(0) }}"
+      trigger_delta: "{{ ((as_timestamp(now()) - last_controller_event_t) * 1000) | int }}"
+
+  # Z2M device-trigger payload may not be exposed via trigger.payload in
+  # all HA versions; fall back to looking at the trigger.subtype, which
+  # IS always populated for device triggers.
+  - variables:
+      trigger_action_final: >-
+        {{ trigger_action if trigger_action else (trigger.subtype | default('')) }}
+
+  # Always update the helper with the raw event so release/double-press
+  # logic in subsequent runs has something to read. Done early so a
+  # later template error can't suppress this write.
   - action: input_text.set_value
     target:
       entity_id: !input helper_last_controller_event
     data:
       value: >-
-        {{ {'a': trigger.id, 't': as_timestamp(now())} | to_json }}
+        {{ {'a': trigger_action_final, 't': as_timestamp(now())} | to_json }}
 
   - choose:
-
-      # ════════ UP SHORT ════════
-      - conditions: "{{ trigger.id == 'up_short' }}"
+      # ════ LEFT short ════
+      - conditions: "{{ trigger_action_final == 'arrow_left_click' }}"
         sequence:
           - choose:
-              # double-press second-press: act as double
-              - conditions:
-                  - "{{ v_btn_up_dp }}"
-                  - "{{ last_event == 'up_short' and trigger_delta_ms <= (v_double_delay | int) }}"
+              - conditions: "{{ button_left_double_press }}"
                 sequence:
-                  - action: input_text.set_value
-                    target:
-                      entity_id: !input helper_last_controller_event
-                    data:
-                      value: "{{ {'a':'up_double','t':as_timestamp(now())} | to_json }}"
                   - choose:
-                      - conditions: []
-                        sequence: !input action_button_up_double
-
-              # double-press first-press: wait, then act as single
-              - conditions:
-                  - "{{ v_btn_up_dp }}"
-                sequence:
-                  - delay:
-                      milliseconds: "{{ v_double_delay | int }}"
-                  - condition: template
-                    value_template: >-
-                      {% set s = states(v_helper_event) | string %}
-                      {% set p = (s | from_json) if (s.startswith('{') and s.endswith('}')) else {} %}
-                      {{ (p.a | default('')) != 'up_double' }}
-                  - choose:
-                      - conditions: "{{ not any_on }}"
+                      - conditions:
+                          - "{{ last_controller_event == 'arrow_left_click' }}"
+                          - "{{ trigger_delta <= (helper_double_press_delay | int) }}"
                         sequence:
-                          - action: light.turn_on
-                            target:
-                              entity_id: !input target_lights
-                            data:
-                              brightness: "{{ cur_b | int }}"
-                              color_temp_kelvin: "{{ cur_k | int }}"
-                              transition: "{{ v_transition | float(0) }}"
                           - action: input_text.set_value
                             target:
-                              entity_id: !input helper_state
+                              entity_id: !input helper_last_controller_event
                             data:
-                              value: "{{ {'b': cur_b | int, 'k': cur_k | int} | to_json }}"
-                    default:
-                      - variables:
-                          new_b: "{{ [[(cur_b | int) + (v_bright_step | int), 255] | min, 1] | max }}"
-                          new_k: "{{ ((v_min_kelvin | int) + ((new_b | int - 1) / 254) * ((v_max_kelvin | int) - (v_min_kelvin | int))) | round(0) | int }}"
-                      - action: light.turn_on
-                        target:
-                          entity_id: !input target_lights
-                        data:
-                          brightness: "{{ new_b | int }}"
-                          color_temp_kelvin: "{{ new_k | int }}"
-                          transition: "{{ v_transition | float(0) }}"
-                      - action: input_text.set_value
-                        target:
-                          entity_id: !input helper_state
-                        data:
-                          value: "{{ {'b': new_b | int, 'k': new_k | int} | to_json }}"
-
-            # double-press disabled: act immediately
-            default:
-              - choose:
-                  - conditions: "{{ not any_on }}"
-                    sequence:
-                      - action: light.turn_on
-                        target:
-                          entity_id: !input target_lights
-                        data:
-                          brightness: "{{ cur_b | int }}"
-                          color_temp_kelvin: "{{ cur_k | int }}"
-                          transition: "{{ v_transition | float(0) }}"
-                      - action: input_text.set_value
-                        target:
-                          entity_id: !input helper_state
-                        data:
-                          value: "{{ {'b': cur_b | int, 'k': cur_k | int} | to_json }}"
-                default:
-                  - variables:
-                      new_b: "{{ [[(cur_b | int) + (v_bright_step | int), 255] | min, 1] | max }}"
-                      new_k: "{{ ((v_min_kelvin | int) + ((new_b | int - 1) / 254) * ((v_max_kelvin | int) - (v_min_kelvin | int))) | round(0) | int }}"
-                  - action: light.turn_on
-                    target:
-                      entity_id: !input target_lights
-                    data:
-                      brightness: "{{ new_b | int }}"
-                      color_temp_kelvin: "{{ new_k | int }}"
-                      transition: "{{ v_transition | float(0) }}"
-                  - action: input_text.set_value
-                    target:
-                      entity_id: !input helper_state
-                    data:
-                      value: "{{ {'b': new_b | int, 'k': new_k | int} | to_json }}"
-
-      # ════════ DOWN SHORT ════════
-      - conditions: "{{ trigger.id == 'down_short' }}"
-        sequence:
-          - choose:
-              # double-press second-press
-              - conditions:
-                  - "{{ v_btn_down_dp }}"
-                  - "{{ last_event == 'down_short' and trigger_delta_ms <= (v_double_delay | int) }}"
-                sequence:
-                  - action: input_text.set_value
-                    target:
-                      entity_id: !input helper_last_controller_event
-                    data:
-                      value: "{{ {'a':'down_double','t':as_timestamp(now())} | to_json }}"
-                  - choose:
-                      - conditions: []
-                        sequence: !input action_button_down_double
-
-              # double-press first-press: wait, then act as single
-              - conditions:
-                  - "{{ v_btn_down_dp }}"
-                sequence:
-                  - delay:
-                      milliseconds: "{{ v_double_delay | int }}"
-                  - condition: template
-                    value_template: >-
-                      {% set s = states(v_helper_event) | string %}
-                      {% set p = (s | from_json) if (s.startswith('{') and s.endswith('}')) else {} %}
-                      {{ (p.a | default('')) != 'down_double' }}
-                  - choose:
-                      - conditions: "{{ any_on }}"
-                        sequence:
-                          - variables:
-                              new_b_raw: "{{ (cur_b | int) - (v_bright_step | int) }}"
+                              value: '{{ {"a":"double_press_left","t":as_timestamp(now())} | to_json }}'
                           - choose:
-                              - conditions: "{{ new_b_raw | int <= 0 }}"
-                                sequence:
-                                  - action: light.turn_off
-                                    target:
-                                      entity_id: !input target_lights
-                                    data:
-                                      transition: "{{ v_transition | float(0) }}"
-                            default:
-                              - variables:
-                                  new_b: "{{ [new_b_raw | int, 1] | max }}"
-                                  new_k: "{{ ((v_min_kelvin | int) + ((new_b | int - 1) / 254) * ((v_max_kelvin | int) - (v_min_kelvin | int))) | round(0) | int }}"
-                              - action: light.turn_on
-                                target:
-                                  entity_id: !input target_lights
-                                data:
-                                  brightness: "{{ new_b | int }}"
-                                  color_temp_kelvin: "{{ new_k | int }}"
-                                  transition: "{{ v_transition | float(0) }}"
-                              - action: input_text.set_value
-                                target:
-                                  entity_id: !input helper_state
-                                data:
-                                  value: "{{ {'b': new_b | int, 'k': new_k | int} | to_json }}"
-
-            # double-press disabled
-            default:
-              - choose:
-                  - conditions: "{{ any_on }}"
-                    sequence:
-                      - variables:
-                          new_b_raw: "{{ (cur_b | int) - (v_bright_step | int) }}"
+                              - conditions: []
+                                sequence: !input action_button_left_double
+                    default:
+                      - delay:
+                          milliseconds: "{{ adjusted_double_press_delay | int }}"
                       - choose:
-                          - conditions: "{{ new_b_raw | int <= 0 }}"
-                            sequence:
-                              - action: light.turn_off
-                                target:
-                                  entity_id: !input target_lights
-                                data:
-                                  transition: "{{ v_transition | float(0) }}"
-                        default:
-                          - variables:
-                              new_b: "{{ [new_b_raw | int, 1] | max }}"
-                              new_k: "{{ ((v_min_kelvin | int) + ((new_b | int - 1) / 254) * ((v_max_kelvin | int) - (v_min_kelvin | int))) | round(0) | int }}"
-                          - action: light.turn_on
-                            target:
-                              entity_id: !input target_lights
-                            data:
-                              brightness: "{{ new_b | int }}"
-                              color_temp_kelvin: "{{ new_k | int }}"
-                              transition: "{{ v_transition | float(0) }}"
-                          - action: input_text.set_value
-                            target:
-                              entity_id: !input helper_state
-                            data:
-                              value: "{{ {'b': new_b | int, 'k': new_k | int} | to_json }}"
-
-      # ════════ UP LONG (hold) ════════
-      - conditions: "{{ trigger.id == 'up_long' }}"
-        sequence:
-          - repeat:
-              sequence:
-                - variables:
-                    raw_state_l: "{{ states(v_helper_state) | string }}"
-                    parsed_state_l: "{{ (raw_state_l | from_json) if (raw_state_l.startswith('{') and raw_state_l.endswith('}')) else {} }}"
-                    iter_b: "{{ parsed_state_l.b | default(v_default_brightness) | int }}"
-                    iter_b_new: "{{ [[iter_b + (v_bright_step | int), 255] | min, 1] | max }}"
-                    iter_k_new: "{{ ((v_min_kelvin | int) + ((iter_b_new | int - 1) / 254) * ((v_max_kelvin | int) - (v_min_kelvin | int))) | round(0) | int }}"
-                - action: light.turn_on
-                  target:
-                    entity_id: !input target_lights
-                  data:
-                    brightness: "{{ iter_b_new | int }}"
-                    color_temp_kelvin: "{{ iter_k_new | int }}"
-                    transition: "{{ (v_long_interval | float / 1000) }}"
-                - action: input_text.set_value
-                  target:
-                    entity_id: !input helper_state
-                  data:
-                    value: "{{ {'b': iter_b_new | int, 'k': iter_k_new | int} | to_json }}"
-                - delay:
-                    milliseconds: "{{ v_long_interval | int }}"
-              until:
-                - condition: template
-                  value_template: >-
-                    {% set s = states(v_helper_event) | string %}
-                    {% set p = (s | from_json) if (s.startswith('{') and s.endswith('}')) else {} %}
-                    {% set release = (p.a | default('')) == 'ud_release' %}
-                    {% set st = states(v_helper_state) | string %}
-                    {% set ps = (st | from_json) if (st.startswith('{') and st.endswith('}')) else {} %}
-                    {% set at_max = (ps.b | default(0) | int) >= 255 %}
-                    {{ release or at_max or (repeat.index >= (v_long_max_ticks | int)) }}
-
-      # ════════ DOWN LONG (hold) ════════
-      - conditions: "{{ trigger.id == 'down_long' }}"
-        sequence:
-          - repeat:
-              sequence:
-                - variables:
-                    raw_state_l: "{{ states(v_helper_state) | string }}"
-                    parsed_state_l: "{{ (raw_state_l | from_json) if (raw_state_l.startswith('{') and raw_state_l.endswith('}')) else {} }}"
-                    iter_b: "{{ parsed_state_l.b | default(v_default_brightness) | int }}"
-                    iter_b_new: "{{ [iter_b - (v_bright_step | int), 1] | max }}"
-                    iter_k_new: "{{ ((v_min_kelvin | int) + ((iter_b_new | int - 1) / 254) * ((v_max_kelvin | int) - (v_min_kelvin | int))) | round(0) | int }}"
-                - action: light.turn_on
-                  target:
-                    entity_id: !input target_lights
-                  data:
-                    brightness: "{{ iter_b_new | int }}"
-                    color_temp_kelvin: "{{ iter_k_new | int }}"
-                    transition: "{{ (v_long_interval | float / 1000) }}"
-                - action: input_text.set_value
-                  target:
-                    entity_id: !input helper_state
-                  data:
-                    value: "{{ {'b': iter_b_new | int, 'k': iter_k_new | int} | to_json }}"
-                - delay:
-                    milliseconds: "{{ v_long_interval | int }}"
-              until:
-                - condition: template
-                  value_template: >-
-                    {% set s = states(v_helper_event) | string %}
-                    {% set p = (s | from_json) if (s.startswith('{') and s.endswith('}')) else {} %}
-                    {% set release = (p.a | default('')) == 'ud_release' %}
-                    {% set st = states(v_helper_state) | string %}
-                    {% set ps = (st | from_json) if (st.startswith('{') and st.endswith('}')) else {} %}
-                    {% set at_min = (ps.b | default(255) | int) <= 1 %}
-                    {{ release or at_min or (repeat.index >= (v_long_max_ticks | int)) }}
-
-      # ════════ UP/DOWN release — sentinel already written ════════
-      - conditions: "{{ trigger.id == 'ud_release' }}"
-        sequence: []
-
-      # ════════ LEFT short ════════
-      - conditions: "{{ trigger.id == 'left_short' }}"
-        sequence:
-          - choose:
-              - conditions:
-                  - "{{ v_btn_left_dp }}"
-                  - "{{ last_event == 'left_short' and trigger_delta_ms <= (v_double_delay | int) }}"
-                sequence:
-                  - action: input_text.set_value
-                    target:
-                      entity_id: !input helper_last_controller_event
-                    data:
-                      value: "{{ {'a':'left_double','t':as_timestamp(now())} | to_json }}"
-                  - choose:
-                      - conditions: []
-                        sequence: !input action_button_left_double
-
-              - conditions:
-                  - "{{ v_btn_left_dp }}"
-                sequence:
-                  - delay:
-                      milliseconds: "{{ v_double_delay | int }}"
-                  - condition: template
-                    value_template: >-
-                      {% set s = states(v_helper_event) | string %}
-                      {% set p = (s | from_json) if (s.startswith('{') and s.endswith('}')) else {} %}
-                      {{ (p.a | default('')) != 'left_double' }}
-                  - choose:
-                      - conditions: []
-                        sequence: !input action_button_left_short
-
+                          - conditions: []
+                            sequence: !input action_button_left_short
             default:
               - choose:
                   - conditions: []
                     sequence: !input action_button_left_short
 
-      - conditions: "{{ trigger.id == 'left_long' }}"
+      # ════ LEFT long ════
+      - conditions: "{{ trigger_action_final == 'arrow_left_hold' }}"
         sequence:
           - choose:
-              - conditions: []
-                sequence: !input action_button_left_long
+              - conditions: "{{ button_left_long_loop }}"
+                sequence:
+                  - repeat:
+                      while: "{{ repeat.index < (long_press_max_loop_repeats | int) }}"
+                      sequence: !input action_button_left_long
+            default: !input action_button_left_long
 
-      - conditions: "{{ trigger.id == 'left_release' }}"
+      # ════ LEFT release ════
+      - conditions:
+          - "{{ trigger_action_final == 'arrow_left_release' }}"
+          - "{{ last_controller_event in ['arrow_left_hold', 'arrow_left_release'] }}"
         sequence:
           - choose:
               - conditions: []
                 sequence: !input action_button_left_release
 
-      # ════════ RIGHT short ════════
-      - conditions: "{{ trigger.id == 'right_short' }}"
+      # ════ RIGHT short ════
+      - conditions: "{{ trigger_action_final == 'arrow_right_click' }}"
         sequence:
           - choose:
-              - conditions:
-                  - "{{ v_btn_right_dp }}"
-                  - "{{ last_event == 'right_short' and trigger_delta_ms <= (v_double_delay | int) }}"
+              - conditions: "{{ button_right_double_press }}"
                 sequence:
-                  - action: input_text.set_value
-                    target:
-                      entity_id: !input helper_last_controller_event
-                    data:
-                      value: "{{ {'a':'right_double','t':as_timestamp(now())} | to_json }}"
                   - choose:
-                      - conditions: []
-                        sequence: !input action_button_right_double
-
-              - conditions:
-                  - "{{ v_btn_right_dp }}"
-                sequence:
-                  - delay:
-                      milliseconds: "{{ v_double_delay | int }}"
-                  - condition: template
-                    value_template: >-
-                      {% set s = states(v_helper_event) | string %}
-                      {% set p = (s | from_json) if (s.startswith('{') and s.endswith('}')) else {} %}
-                      {{ (p.a | default('')) != 'right_double' }}
-                  - choose:
-                      - conditions: []
-                        sequence: !input action_button_right_short
-
+                      - conditions:
+                          - "{{ last_controller_event == 'arrow_right_click' }}"
+                          - "{{ trigger_delta <= (helper_double_press_delay | int) }}"
+                        sequence:
+                          - action: input_text.set_value
+                            target:
+                              entity_id: !input helper_last_controller_event
+                            data:
+                              value: '{{ {"a":"double_press_right","t":as_timestamp(now())} | to_json }}'
+                          - choose:
+                              - conditions: []
+                                sequence: !input action_button_right_double
+                    default:
+                      - delay:
+                          milliseconds: "{{ adjusted_double_press_delay | int }}"
+                      - choose:
+                          - conditions: []
+                            sequence: !input action_button_right_short
             default:
               - choose:
                   - conditions: []
                     sequence: !input action_button_right_short
 
-      - conditions: "{{ trigger.id == 'right_long' }}"
+      # ════ RIGHT long ════
+      - conditions: "{{ trigger_action_final == 'arrow_right_hold' }}"
         sequence:
           - choose:
-              - conditions: []
-                sequence: !input action_button_right_long
+              - conditions: "{{ button_right_long_loop }}"
+                sequence:
+                  - repeat:
+                      while: "{{ repeat.index < (long_press_max_loop_repeats | int) }}"
+                      sequence: !input action_button_right_long
+            default: !input action_button_right_long
 
-      - conditions: "{{ trigger.id == 'right_release' }}"
+      # ════ RIGHT release ════
+      - conditions:
+          - "{{ trigger_action_final == 'arrow_right_release' }}"
+          - "{{ last_controller_event in ['arrow_right_hold', 'arrow_right_release'] }}"
         sequence:
           - choose:
               - conditions: []
                 sequence: !input action_button_right_release
+
+      # ════ UP short ════
+      - conditions: "{{ trigger_action_final == 'on' }}"
+        sequence:
+          - choose:
+              - conditions: "{{ button_up_double_press }}"
+                sequence:
+                  - choose:
+                      - conditions:
+                          - "{{ last_controller_event == 'on' }}"
+                          - "{{ trigger_delta <= (helper_double_press_delay | int) }}"
+                        sequence:
+                          - action: input_text.set_value
+                            target:
+                              entity_id: !input helper_last_controller_event
+                            data:
+                              value: '{{ {"a":"double_press_up","t":as_timestamp(now())} | to_json }}'
+                          - choose:
+                              - conditions: []
+                                sequence: !input action_button_up_double
+                    default:
+                      - delay:
+                          milliseconds: "{{ adjusted_double_press_delay | int }}"
+                      - choose:
+                          - conditions: []
+                            sequence: !input action_button_up_short
+            default:
+              - choose:
+                  - conditions: []
+                    sequence: !input action_button_up_short
+
+      # ════ UP long ════
+      - conditions: "{{ trigger_action_final == 'brightness_move_up' }}"
+        sequence:
+          - choose:
+              - conditions: "{{ button_up_long_loop }}"
+                sequence:
+                  - repeat:
+                      while: "{{ repeat.index < (long_press_max_loop_repeats | int) }}"
+                      sequence: !input action_button_up_long
+            default: !input action_button_up_long
+
+      # ════ DOWN short ════
+      - conditions: "{{ trigger_action_final == 'off' }}"
+        sequence:
+          - choose:
+              - conditions: "{{ button_down_double_press }}"
+                sequence:
+                  - choose:
+                      - conditions:
+                          - "{{ last_controller_event == 'off' }}"
+                          - "{{ trigger_delta <= (helper_double_press_delay | int) }}"
+                        sequence:
+                          - action: input_text.set_value
+                            target:
+                              entity_id: !input helper_last_controller_event
+                            data:
+                              value: '{{ {"a":"double_press_down","t":as_timestamp(now())} | to_json }}'
+                          - choose:
+                              - conditions: []
+                                sequence: !input action_button_down_double
+                    default:
+                      - delay:
+                          milliseconds: "{{ adjusted_double_press_delay | int }}"
+                      - choose:
+                          - conditions: []
+                            sequence: !input action_button_down_short
+            default:
+              - choose:
+                  - conditions: []
+                    sequence: !input action_button_down_short
+
+      # ════ DOWN long ════
+      - conditions: "{{ trigger_action_final == 'brightness_move_down' }}"
+        sequence:
+          - choose:
+              - conditions: "{{ button_down_long_loop }}"
+                sequence:
+                  - repeat:
+                      while: "{{ repeat.index < (long_press_max_loop_repeats | int) }}"
+                      sequence: !input action_button_down_long
+            default: !input action_button_down_long
+
+      # ════ UP/DOWN release (shared brightness_stop event) ════
+      - conditions:
+          - "{{ trigger_action_final == 'brightness_stop' }}"
+          - "{{ last_controller_event in ['brightness_move_up', 'brightness_stop'] }}"
+        sequence:
+          - choose:
+              - conditions: []
+                sequence: !input action_button_up_release
+
+      - conditions:
+          - "{{ trigger_action_final == 'brightness_stop' }}"
+          - "{{ last_controller_event == 'brightness_move_down' }}"
+        sequence:
+          - choose:
+              - conditions: []
+                sequence: !input action_button_down_release
