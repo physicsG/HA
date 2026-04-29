@@ -310,12 +310,12 @@ blueprint:
       selector:
         action:
 
-# Restart mode (matching upstream STYRBAR blueprint): any new trigger -- including
-# the brightness_stop release event, an external state_changed echo, or a fresh
-# button press -- cancels the running long-press loop. This is the loop-stop
-# mechanism; max_loop_repeats is just a safety cap. Restart also guarantees only
-# one Branch-A (state_changed) reaction is in flight, preventing the
-# 1 -> N -> N^2 amplification that occurred under mode: parallel.
+          # Restart mode (matching upstream STYRBAR blueprint): any new trigger -- including
+          # the brightness_stop release event, an external state_changed echo, or a fresh
+          # button press -- cancels the running long-press loop. This is the loop-stop
+          # mechanism; max_loop_repeats is just a safety cap. Restart also guarantees only
+          # one Branch-A (state_changed) reaction is in flight, preventing the
+          # 1 -> N -> N^2 amplification that occurred under mode: parallel.
 mode: restart
 max_exceeded: silent
 
@@ -459,13 +459,19 @@ actions:
                   {%- set frac = (p - lz) / (uz - lz) -%}
                   {{ (mn + frac * (mx - mn)) | round(0) | int }}
                 {%- endif -%}
-              # echo: brightness within +/-5 AND kelvin within deadband AND within stabilization window
+              # echo suppression:
+              #   1. Inside the stabilization window after our own command, treat
+              #      *any* state_changed as an echo (transitions emit a stream of
+              #      intermediate brightness values that the +/-5 check would miss).
+              #   2. Outside the window, only suppress when both brightness and
+              #      kelvin already match the snapshot (defends against duplicate
+              #      events without blocking real external changes).
+              in_stab_window: '{{ ls_age_ms <= stabilization_delay_ms | int }}'
               is_echo: >-
-                {{ (ls.b | default(-999) | int(-999) - new_brightness) | abs <=
-                5
-                   and (ls.k | default(-9999) | int(-9999) - target_kelvin | int) | abs
-                       <= kelvin_deadband | int
-                   and ls_age_ms <= stabilization_delay_ms | int }}
+                {{ in_stab_window
+                   or ((ls.b | default(-999) | int(-999) - new_brightness) | abs <= 5
+                       and (ls.k | default(-9999) | int(-9999) - target_kelvin | int) | abs
+                           <= kelvin_deadband | int) }}
               current_kelvin: '{{ trigger.to_state.attributes.color_temp_kelvin | int(0) }}'
               kelvin_delta: '{{ (target_kelvin | int - current_kelvin | int) | abs }}'
           - choose:
