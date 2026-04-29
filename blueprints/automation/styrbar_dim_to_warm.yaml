@@ -310,8 +310,13 @@ blueprint:
       selector:
         action:
 
-mode: parallel
-max: 10
+# Restart mode (matching upstream STYRBAR blueprint): any new trigger -- including
+# the brightness_stop release event, an external state_changed echo, or a fresh
+# button press -- cancels the running long-press loop. This is the loop-stop
+# mechanism; max_loop_repeats is just a safety cap. Restart also guarantees only
+# one Branch-A (state_changed) reaction is in flight, preventing the
+# 1 -> N -> N^2 amplification that occurred under mode: parallel.
+mode: restart
 max_exceeded: silent
 
 variables:
