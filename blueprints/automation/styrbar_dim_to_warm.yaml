@@ -367,14 +367,10 @@ actions:
   # ====== overwriting), but make the read defensively bullet-proof ======
   # ====== so any template error returns empty instead of aborting. ======
   - variables:
-      trigger_action_final: "{{ '' ~ (trigger.payload | default('')) }}"
-      _raw_helper: "{{ '' ~ states(helper_last_controller_event) }}"
-      last_controller_event: >-
-        {% set p = (_raw_helper | from_json) if (_raw_helper[:1] == '{' and
-        _raw_helper[-1:] == '}') else {} %} {{ p.a | default('') }}
-      last_controller_event_t: >-
-        {% set p = (_raw_helper | from_json) if (_raw_helper[:1] == '{' and
-        _raw_helper[-1:] == '}') else {} %} {{ p.t | default(0) | float(0) }}
+      trigger_action_final: "{{ trigger.payload | default('') }}"
+      _parsed_helper: "{{ states(helper_last_controller_event) | from_json(default={}) }}"
+      last_controller_event: "{{ _parsed_helper.a | default('') }}"
+      last_controller_event_t: "{{ _parsed_helper.t | default(0) | float(0) }}"
       trigger_delta: "{{ ((as_timestamp(now()) - (last_controller_event_t | float(0)))
         * 1000) | int }}"
 
@@ -393,15 +389,11 @@ actions:
 
   # Dim-to-warm state, computed defensively (any error -> defaults).
   - variables:
-      _raw_state: "{{ '' ~ states(v_helper_state) }}"
-      cur_b: >-
-        {% set p = (_raw_state | from_json) if (_raw_state[:1] == '{' and
-        _raw_state[-1:] == '}') else {} %} {{ p.b |
-        default(v_default_brightness, true) | int }}
+      _parsed_state: "{{ states(v_helper_state) | from_json(default={}) }}"
+      cur_b: "{{ _parsed_state.b | default(v_default_brightness, true) | int }}"
       cur_k: >-
-        {% set p = (_raw_state | from_json) if (_raw_state[:1] == '{' and
-        _raw_state[-1:] == '}') else {} %} {% set kdef = ((v_min_kelvin | int +
-        v_max_kelvin | int) / 2) | int %} {{ p.k | default(kdef, true) | int }}
+        {% set kdef = ((v_min_kelvin | int + v_max_kelvin | int) / 2) | int %}
+        {{ _parsed_state.k | default(kdef, true) | int }}
       any_on: "{{ v_target_lights | map('states') | select('eq', 'on') | list | count
         > 0 }}"
 
