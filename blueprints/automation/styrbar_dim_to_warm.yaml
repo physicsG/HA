@@ -286,7 +286,8 @@ actions:
       milliseconds: "{{ helper_debounce_delay | int }}"
 
   - variables:
-      trigger_action: "{{ trigger.event.data.payload | default(trigger.payload) | default('') }}"
+      # Z2M MQTT device triggers expose the action string via trigger.payload.
+      trigger_action_final: "{{ trigger.payload | default('') | string }}"
       raw_helper: "{{ states(helper_last_controller_event) | string }}"
       parsed_helper: >-
         {{ (raw_helper | from_json) if (raw_helper.startswith('{') and raw_helper.endswith('}')) else {} }}
@@ -294,16 +295,8 @@ actions:
       last_controller_event_t: "{{ parsed_helper.t | default(0) | float(0) }}"
       trigger_delta: "{{ ((as_timestamp(now()) - last_controller_event_t) * 1000) | int }}"
 
-  # Z2M device-trigger payload may not be exposed via trigger.payload in
-  # all HA versions; fall back to looking at the trigger.subtype, which
-  # IS always populated for device triggers.
-  - variables:
-      trigger_action_final: >-
-        {{ trigger_action if trigger_action else (trigger.subtype | default('')) }}
-
   # Always update the helper with the raw event so release/double-press
-  # logic in subsequent runs has something to read. Done early so a
-  # later template error can't suppress this write.
+  # logic in subsequent runs has something to read.
   - action: input_text.set_value
     target:
       entity_id: !input helper_last_controller_event
