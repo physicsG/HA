@@ -445,6 +445,21 @@ actions:
                       and ls_raw | regex_match('^\{.*\}$')
                    else {} }}
               ls_age_ms: '{{ ((as_timestamp(now()) - (ls.t | default(0))) * 1000) | int }}'
+              # parse remote-event helper to detect a recent button press --
+              # state_changed events fired during/after the press are ours, not external
+              le_raw: '{{ states(helper_last_event) }}'
+              le: >-
+                {{ (le_raw | from_json)
+                   if le_raw is string
+                      and le_raw | regex_match('^\{.*\}$')
+                   else {} }}
+              le_age_ms: '{{ ((as_timestamp(now()) - (le.t | default(0))) * 1000) | int }}'
+              # remote lockout: ignore state changes for stabilization_delay_ms
+              # plus the transition window after any remote action
+              remote_lockout_ms: >-
+                {{ (stabilization_delay_ms | int)
+                   + ((transition_seconds | float(0.3)) * 1000) | int + 200 }}
+              remote_recent: '{{ le_age_ms <= remote_lockout_ms | int }}'
               # compute target kelvin from dim-to-warm curve
               lz: '{{ lower_zone_pct | float(10) }}'
               uz: '{{ upper_zone_pct | float(90) }}'
@@ -460,15 +475,20 @@ actions:
                   {{ (mn + frac * (mx - mn)) | round(0) | int }}
                 {%- endif -%}
               # echo suppression:
-              #   1. Inside the stabilization window after our own command, treat
-              #      *any* state_changed as an echo (transitions emit a stream of
-              #      intermediate brightness values that the +/-5 check would miss).
-              #   2. Outside the window, only suppress when both brightness and
+              #   1. If a remote button was pressed recently, the state changes
+              #      we are seeing are caused by us (or by the remote's own
+              #      brightness_move loop). Always suppress.
+              #   2. Inside the stabilization window after our own light command,
+              #      treat *any* state_changed as an echo (transitions emit a
+              #      stream of intermediate brightness values that the +/-5 check
+              #      would miss).
+              #   3. Outside both windows, only suppress when both brightness and
               #      kelvin already match the snapshot (defends against duplicate
               #      events without blocking real external changes).
               in_stab_window: '{{ ls_age_ms <= stabilization_delay_ms | int }}'
               is_echo: >-
-                {{ in_stab_window
+                {{ remote_recent
+                   or in_stab_window
                    or ((ls.b | default(-999) | int(-999) - new_brightness) | abs <= 5
                        and (ls.k | default(-9999) | int(-9999) - target_kelvin | int) | abs
                            <= kelvin_deadband | int) }}
