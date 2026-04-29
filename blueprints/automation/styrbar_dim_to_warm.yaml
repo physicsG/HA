@@ -348,29 +348,33 @@ triggers:
 #  Actions
 # ═══════════════════════════════════════════════════════════════
 actions:
-  # Decode current helper state. Each value is a SINGLE Jinja
-  # expression so HA's native-template support keeps real Python
-  # types (dicts, ints) instead of stringifying them.
+  # 1) Decode helper state and capture the *previous* event helper
+  #    BEFORE we overwrite it. Each variable is a single {{ ... }}
+  #    expression so HA native templating keeps real types.
   - variables:
       raw_state: "{{ states(v_helper_state) | string }}"
-      parsed_state: "{{ (raw_state | from_json) if (raw_state.startswith('{') and raw_state.endswith('}')) else {} }}"
-      cur_b: "{{ parsed_state.b | default(v_default_brightness) | int }}"
+      parsed_state: >-
+        {{ (raw_state | from_json) if (raw_state.startswith('{') and raw_state.endswith('}')) else {} }}
+      cur_b: "{{ parsed_state.b | default(v_default_brightness, true) | int }}"
       cur_k_default: "{{ ((v_min_kelvin | int + v_max_kelvin | int) / 2) | int }}"
-      cur_k: "{{ parsed_state.k | default(cur_k_default) | int }}"
+      cur_k: "{{ parsed_state.k | default(cur_k_default, true) | int }}"
       raw_event: "{{ states(v_helper_event) | string }}"
-      parsed_event: "{{ (raw_event | from_json) if (raw_event.startswith('{') and raw_event.endswith('}')) else {} }}"
+      parsed_event: >-
+        {{ (raw_event | from_json) if (raw_event.startswith('{') and raw_event.endswith('}')) else {} }}
       last_event: "{{ parsed_event.a | default('') }}"
       last_event_t: "{{ parsed_event.t | default(0) | float(0) }}"
       trigger_delta_ms: "{{ ((as_timestamp(now()) - last_event_t) * 1000) | int }}"
-      any_on: "{{ v_target_lights | select('is_state', 'on') | list | count > 0 }}"
+      any_on: "{{ v_target_lights | map('states') | select('eq', 'on') | list | count > 0 }}"
 
-  # Always record this raw trigger into the event helper.
-  # The long-press hold loop watches this to detect release.
+  # 2) Now overwrite the event helper with the current trigger so
+  #    the long-press hold loop can detect release, and so the next
+  #    invocation can detect double-press.
   - action: input_text.set_value
     target:
       entity_id: !input helper_last_controller_event
     data:
-      value: "{{ {'a': trigger.id, 't': as_timestamp(now())} | to_json }}"
+      value: >-
+        {{ {'a': trigger.id, 't': as_timestamp(now())} | to_json }}
 
   - choose:
 
