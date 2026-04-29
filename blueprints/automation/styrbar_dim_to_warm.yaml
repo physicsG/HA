@@ -29,6 +29,9 @@ blueprint:
   homeassistant:
     min_version: "2024.10.0"
   input:
+    # ══════════════════════════════════════════════════════════
+    #  Hardware & helpers
+    # ══════════════════════════════════════════════════════════
     controller_device:
       name: "STYRBAR remote (Z2M)"
       description: "The Zigbee2MQTT STYRBAR device."
@@ -51,14 +54,12 @@ blueprint:
       selector:
         entity:
           domain: input_text
-
-    # ── Dim-to-warm (Up/Down) ────────────────────────────────
     target_lights:
       name: "Target light(s)"
       description: >
-        Light(s) controlled by the Up/Down buttons. The new color temperature is
-        computed from the new brightness and written with it in a single
-        light.turn_on call.
+        Light(s) controlled by the Up/Down buttons. Color and brightness are
+        sent in two sequential light.turn_on calls (color first, then
+        brightness) for a smoother visual ramp on IKEA bulbs.
       selector:
         entity:
           domain: light
@@ -72,6 +73,10 @@ blueprint:
       selector:
         entity:
           domain: input_text
+
+    # ══════════════════════════════════════════════════════════
+    #  Dim-to-warm tuning
+    # ══════════════════════════════════════════════════════════
     min_kelvin:
       name: "Min Kelvin (at lowest brightness)"
       default: 2200
@@ -88,6 +93,15 @@ blueprint:
           unit: kelvin
           min: 1800
           max: 6500
+    default_brightness:
+      name: "Default brightness when helper is empty"
+      default: 200
+      selector:
+        number:
+          min: 1
+          max: 255
+          step: 1
+          mode: slider
     bright_step:
       name: "Brightness step (0–255 units)"
       default: 25
@@ -96,16 +110,6 @@ blueprint:
           min: 5
           max: 64
           step: 1
-          mode: slider
-    long_press_interval_ms:
-      name: "Long-press tick interval (ms)"
-      default: 400
-      selector:
-        number:
-          min: 100
-          max: 2000
-          step: 50
-          unit_of_measurement: ms
           mode: slider
     transition:
       name: "Transition (s)"
@@ -117,17 +121,10 @@ blueprint:
           step: 0.1
           unit_of_measurement: s
           mode: slider
-    default_brightness:
-      name: "Default brightness when helper is empty"
-      default: 200
-      selector:
-        number:
-          min: 1
-          max: 255
-          step: 1
-          mode: slider
 
-    # ── Action slots ─────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════
+    #  Action slots
+    # ══════════════════════════════════════════════════════════
     action_button_left_short:
       name: "Left — short press"
       default: []
@@ -196,7 +193,9 @@ blueprint:
       default: []
       selector: { action: {} }
 
-    # ── Long-press looping ──────────────────────────────────
+    # ══════════════════════════════════════════════════════════
+    #  Long-press behavior
+    # ══════════════════════════════════════════════════════════
     button_left_long_loop:
       name: "Left — loop long press"
       default: false
@@ -213,6 +212,16 @@ blueprint:
       name: "Down — loop long press"
       default: false
       selector: { boolean: {} }
+    long_press_interval_ms:
+      name: "Long-press tick interval (ms)"
+      default: 400
+      selector:
+        number:
+          min: 100
+          max: 2000
+          step: 50
+          unit_of_measurement: ms
+          mode: slider
     long_press_max_loop_repeats:
       name: "Long-press max loop repeats (safety cap)"
       default: 500
@@ -223,7 +232,9 @@ blueprint:
           step: 1
           mode: slider
 
-    # ── Double-press toggles ────────────────────────────────
+    # ══════════════════════════════════════════════════════════
+    #  Double-press behavior
+    # ══════════════════════════════════════════════════════════
     button_left_double_press:
       name: "Expose left double-press"
       default: false
@@ -240,7 +251,6 @@ blueprint:
       name: "Expose down double-press"
       default: false
       selector: { boolean: {} }
-
     helper_double_press_delay:
       name: "Helper — Double-press window (ms)"
       default: 500
@@ -251,6 +261,10 @@ blueprint:
           step: 10
           unit_of_measurement: ms
           mode: box
+
+    # ══════════════════════════════════════════════════════════
+    #  Debounce
+    # ══════════════════════════════════════════════════════════
     helper_debounce_delay:
       name: "Helper — Debounce delay (ms)"
       description: >
@@ -268,29 +282,40 @@ blueprint:
 #  Variables
 # ═══════════════════════════════════════════════════════════════
 variables:
+  # ── Hardware ──
+  controller_id: !input controller_device
+
+  # ── Helper entities ──
   helper_last_controller_event: !input helper_last_controller_event
-  helper_double_press_delay: !input helper_double_press_delay
-  helper_debounce_delay: !input helper_debounce_delay
-  long_press_max_loop_repeats: !input long_press_max_loop_repeats
-  adjusted_double_press_delay: "{{ [(helper_double_press_delay | int) -
-    (helper_debounce_delay | int), 100] | max }}"
+  v_helper_state: !input helper_state
+
+  # ── Lights & dim-to-warm tuning ──
+  v_target_lights: !input target_lights
+  v_min_kelvin: !input min_kelvin
+  v_max_kelvin: !input max_kelvin
+  v_default_brightness: !input default_brightness
+  v_bright_step: !input bright_step
+  v_transition: !input transition
+
+  # ── Long-press loop config ──
   button_left_long_loop: !input button_left_long_loop
   button_right_long_loop: !input button_right_long_loop
   button_up_long_loop: !input button_up_long_loop
   button_down_long_loop: !input button_down_long_loop
+  v_long_interval: !input long_press_interval_ms
+  long_press_max_loop_repeats: !input long_press_max_loop_repeats
+
+  # ── Double-press config ──
   button_left_double_press: !input button_left_double_press
   button_right_double_press: !input button_right_double_press
   button_up_double_press: !input button_up_double_press
   button_down_double_press: !input button_down_double_press
-  controller_id: !input controller_device
-  v_target_lights: !input target_lights
-  v_helper_state: !input helper_state
-  v_min_kelvin: !input min_kelvin
-  v_max_kelvin: !input max_kelvin
-  v_bright_step: !input bright_step
-  v_long_interval: !input long_press_interval_ms
-  v_transition: !input transition
-  v_default_brightness: !input default_brightness
+  helper_double_press_delay: !input helper_double_press_delay
+
+  # ── Debounce ──
+  helper_debounce_delay: !input helper_debounce_delay
+  adjusted_double_press_delay: "{{ [(helper_double_press_delay | int) -
+    (helper_debounce_delay | int), 100] | max }}"
 
 # ═══════════════════════════════════════════════════════════════
 #  Mode — restart so a new press cancels the in-flight wait
@@ -553,8 +578,13 @@ actions:
                             target:
                               entity_id: !input target_lights
                             data:
-                              brightness: "{{ new_b | int }}"
                               color_temp_kelvin: "{{ new_k | int }}"
+                              transition: "{{ v_transition | float(0) }}"
+                          - action: light.turn_on
+                            target:
+                              entity_id: !input target_lights
+                            data:
+                              brightness: "{{ new_b | int }}"
                               transition: "{{ v_transition | float(0) }}"
                           - action: input_text.set_value
                             target:
@@ -589,8 +619,13 @@ actions:
                     target:
                       entity_id: !input target_lights
                     data:
-                      brightness: "{{ new_b | int }}"
                       color_temp_kelvin: "{{ new_k | int }}"
+                      transition: "{{ v_transition | float(0) }}"
+                  - action: light.turn_on
+                    target:
+                      entity_id: !input target_lights
+                    data:
+                      brightness: "{{ new_b | int }}"
                       transition: "{{ v_transition | float(0) }}"
                   - action: input_text.set_value
                     target:
@@ -610,12 +645,8 @@ actions:
                 - "{{ repeat.index < (long_press_max_loop_repeats | int) }}"
               sequence:
                 - variables:
-                    raw_state_l: "{{ states(v_helper_state) | string }}"
-                    parsed_state_l: >-
-                      {{ (raw_state_l | from_json) if
-                      (raw_state_l.startswith('{') and
-                      raw_state_l.endswith('}')) else {} }}
-                    iter_b: "{{ parsed_state_l.b | default(v_default_brightness, true) | int }}"
+                    _parsed_state_l: "{{ states(v_helper_state) | from_json(default={}) }}"
+                    iter_b: "{{ _parsed_state_l.b | default(v_default_brightness, true) | int }}"
                     iter_b_new: "{{ [[iter_b + (v_bright_step | int), 255] | min, 1] | max }}"
                     iter_k_new: "{{ ((v_min_kelvin | int) + ((iter_b_new | int - 1) / 254) *
                       ((v_max_kelvin | int) - (v_min_kelvin | int))) | round(0)
@@ -624,8 +655,13 @@ actions:
                   target:
                     entity_id: !input target_lights
                   data:
-                    brightness: "{{ iter_b_new | int }}"
                     color_temp_kelvin: "{{ iter_k_new | int }}"
+                    transition: "{{ (v_long_interval | float / 1000) }}"
+                - action: light.turn_on
+                  target:
+                    entity_id: !input target_lights
+                  data:
+                    brightness: "{{ iter_b_new | int }}"
                     transition: "{{ (v_long_interval | float / 1000) }}"
                 - action: input_text.set_value
                   target:
@@ -684,8 +720,13 @@ actions:
                                     target:
                                       entity_id: !input target_lights
                                     data:
-                                      brightness: "{{ new_b | int }}"
                                       color_temp_kelvin: "{{ new_k | int }}"
+                                      transition: "{{ v_transition | float(0) }}"
+                                  - action: light.turn_on
+                                    target:
+                                      entity_id: !input target_lights
+                                    data:
+                                      brightness: "{{ new_b | int }}"
                                       transition: "{{ v_transition | float(0) }}"
                                   - action: input_text.set_value
                                     target:
@@ -719,8 +760,13 @@ actions:
                             target:
                               entity_id: !input target_lights
                             data:
-                              brightness: "{{ new_b | int }}"
                               color_temp_kelvin: "{{ new_k | int }}"
+                              transition: "{{ v_transition | float(0) }}"
+                          - action: light.turn_on
+                            target:
+                              entity_id: !input target_lights
+                            data:
+                              brightness: "{{ new_b | int }}"
                               transition: "{{ v_transition | float(0) }}"
                           - action: input_text.set_value
                             target:
@@ -739,17 +785,12 @@ actions:
               while:
                 - "{{ repeat.index < (long_press_max_loop_repeats | int) }}"
                 - >-
-                  {% set s = states(v_helper_state) | string %} {% set p = (s |
-                  from_json) if (s.startswith('{') and s.endswith('}')) else {}
-                  %} {{ (p.b | default(255) | int) > 1 }}
+                  {% set p = states(v_helper_state) | from_json(default={}) %}
+                  {{ (p.b | default(255) | int) > 1 }}
               sequence:
                 - variables:
-                    raw_state_l: "{{ states(v_helper_state) | string }}"
-                    parsed_state_l: >-
-                      {{ (raw_state_l | from_json) if
-                      (raw_state_l.startswith('{') and
-                      raw_state_l.endswith('}')) else {} }}
-                    iter_b: "{{ parsed_state_l.b | default(v_default_brightness, true) | int }}"
+                    _parsed_state_l: "{{ states(v_helper_state) | from_json(default={}) }}"
+                    iter_b: "{{ _parsed_state_l.b | default(v_default_brightness, true) | int }}"
                     iter_b_new: "{{ [iter_b - (v_bright_step | int), 1] | max }}"
                     iter_k_new: "{{ ((v_min_kelvin | int) + ((iter_b_new | int - 1) / 254) *
                       ((v_max_kelvin | int) - (v_min_kelvin | int))) | round(0)
@@ -758,8 +799,13 @@ actions:
                   target:
                     entity_id: !input target_lights
                   data:
-                    brightness: "{{ iter_b_new | int }}"
                     color_temp_kelvin: "{{ iter_k_new | int }}"
+                    transition: "{{ (v_long_interval | float / 1000) }}"
+                - action: light.turn_on
+                  target:
+                    entity_id: !input target_lights
+                  data:
+                    brightness: "{{ iter_b_new | int }}"
                     transition: "{{ (v_long_interval | float / 1000) }}"
                 - action: input_text.set_value
                   target:
