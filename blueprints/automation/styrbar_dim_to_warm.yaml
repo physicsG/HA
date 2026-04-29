@@ -1,0 +1,784 @@
+# STYRBAR + Dim-to-Warm
+#
+# A Home Assistant automation blueprint that combines:
+#   - IKEA E2001/E2002 STYRBAR remote control (Zigbee2MQTT only)
+#   - Hue-style "dim to warm" color-temperature curve linked to brightness
+#
+# Credits (both MIT-licensed):
+#   - STYRBAR z2m triggers, double-press detection, helper-based last-event pattern
+#     adapted from: https://github.com/EPMatt/awesome-ha-blueprints
+#   - Dim-to-warm Kelvin interpolation, deadband, stabilization concept
+#     adapted from: https://github.com/robblids/ha-dim-to-warm
+#
+# Required helpers (create both as input_text in Settings -> Devices & Services -> Helpers):
+#   - one for "last event"   (double-press detection)
+#   - one for "last command" (echo suppression on external state changes)
+#
+blueprint:
+  name: STYRBAR + Dim-to-Warm
+  description: |
+    # STYRBAR + Dim-to-Warm
+
+    Use an IKEA E2001/E2002 STYRBAR remote (Zigbee2MQTT) to control one or more
+    lights. Brightness changes automatically shift color temperature (Hue-style
+    "dim to warm"). Optionally also reacts to external brightness changes from
+    the HA UI, voice assistants, or other automations.
+
+    **Required helpers** (create both before importing):
+      - `input_text` for **last event** (double-press detection)
+      - `input_text` for **last command** (echo suppression)
+
+    Up = on / brighten (held). Down = off / dim (held). Left/Right and double-press
+    actions are user-defined and optional.
+  source_url: https://github.com/local/HA/blob/main/blueprints/automation/styrbar_dim_to_warm.yaml
+  domain: automation
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    # ------- required -------
+    lights:
+      name: (Required) Lights
+      description: One or more lights to control. To use a light group, create one in HA and select that group's entity here.
+      selector:
+        entity:
+          domain: light
+          multiple: true
+    controller_device:
+      name: (Required) STYRBAR remote
+      description: The Zigbee2MQTT STYRBAR device that drives this automation.
+      selector:
+        device:
+          filter:
+            - integration: mqtt
+              manufacturer: IKEA
+              model: STYRBAR remote control
+            - integration: mqtt
+              manufacturer: IKEA
+              model: STYRBAR remote control (E2001/E2002)
+          multiple: false
+    helper_last_event:
+      name: (Required) Helper - Last event
+      description: An `input_text` used to remember the last button press for double-press detection.
+      selector:
+        entity:
+          domain: input_text
+    helper_last_command:
+      name: (Required) Helper - Last command
+      description: An `input_text` used to remember the last brightness/Kelvin command this blueprint issued, used to suppress echo from `state_changed` events.
+      selector:
+        entity:
+          domain: input_text
+
+    # ------- dim-to-warm tuning (sliders) -------
+    min_kelvin:
+      name: Minimum Kelvin (warmest)
+      description: Color temperature used at low brightness.
+      default: 2500
+      selector:
+        number:
+          min: 2000
+          max: 6500
+          step: 50
+          unit_of_measurement: K
+          mode: slider
+    max_kelvin:
+      name: Maximum Kelvin (coolest)
+      description: Color temperature used at high brightness.
+      default: 4000
+      selector:
+        number:
+          min: 2000
+          max: 6500
+          step: 50
+          unit_of_measurement: K
+          mode: slider
+    lower_zone_pct:
+      name: Lower brightness zone (%)
+      description: Below this brightness percentage the minimum Kelvin is always used.
+      default: 10
+      selector:
+        number:
+          min: 0
+          max: 50
+          step: 1
+          unit_of_measurement: "%"
+          mode: slider
+    upper_zone_pct:
+      name: Upper brightness zone (%)
+      description: Above this brightness percentage the maximum Kelvin is always used.
+      default: 90
+      selector:
+        number:
+          min: 50
+          max: 100
+          step: 1
+          unit_of_measurement: "%"
+          mode: slider
+    kelvin_deadband:
+      name: Kelvin deadband
+      description: Ignore external brightness changes whose computed Kelvin shift is smaller than this. Helps prevent feedback loops.
+      default: 25
+      selector:
+        number:
+          min: 0
+          max: 200
+          step: 5
+          unit_of_measurement: K
+          mode: slider
+    stabilization_delay_ms:
+      name: Stabilization delay (ms)
+      description: Time window after the blueprint sets a light's value during which echoed `state_changed` events for that light are ignored.
+      default: 150
+      selector:
+        number:
+          min: 0
+          max: 1000
+          step: 50
+          unit_of_measurement: ms
+          mode: slider
+
+    # ------- loop / timing -------
+    brightness_step_pct:
+      name: Brightness step (% per loop)
+      description: How much brightness changes per iteration when a button is held.
+      default: 10
+      selector:
+        number:
+          min: 1
+          max: 25
+          step: 1
+          unit_of_measurement: "%"
+          mode: slider
+    loop_delay_ms:
+      name: Loop delay (ms)
+      description: Delay between brightness steps when a button is held.
+      default: 250
+      selector:
+        number:
+          min: 100
+          max: 1000
+          step: 50
+          unit_of_measurement: ms
+          mode: slider
+    transition_seconds:
+      name: Light transition (s)
+      description: Duration passed to `light.turn_on` for smooth changes.
+      default: 0.3
+      selector:
+        number:
+          min: 0
+          max: 2
+          step: 0.1
+          unit_of_measurement: s
+          mode: slider
+    max_loop_repeats:
+      name: Maximum loop repeats
+      description: Safety cap on how many step iterations a single hold can run.
+      default: 50
+      selector:
+        number:
+          min: 5
+          max: 200
+          step: 5
+          mode: slider
+
+    # ------- double-press tuning -------
+    double_press_window_ms:
+      name: Double-press window (ms)
+      description: Maximum delay between two short presses to count as a double-press.
+      default: 500
+      selector:
+        number:
+          min: 100
+          max: 2000
+          step: 50
+          unit_of_measurement: ms
+          mode: slider
+    debounce_delay_ms:
+      name: Debounce delay (ms)
+      description: Delay used to debounce raw controller events. 0 disables debouncing.
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 500
+          step: 10
+          unit_of_measurement: ms
+          mode: slider
+
+    # ------- behavior toggles -------
+    apply_on_turn_on:
+      name: Apply dim-to-warm when turning on
+      description: When the up button turns lights on, also recompute Kelvin from the resulting brightness.
+      default: true
+      selector:
+        boolean:
+    listen_external_changes:
+      name: React to external brightness changes
+      description: When enabled, the blueprint also listens for `state_changed` events on the selected lights and re-applies the dim-to-warm curve. Echoes from the blueprint's own commands are suppressed via the last-command helper plus stabilization delay.
+      default: true
+      selector:
+        boolean:
+    expose_up_double:
+      name: Expose Up double-press
+      description: Enable to use the Up double-press action. Adds the double-press window of latency to the Up short press.
+      default: false
+      selector:
+        boolean:
+    expose_down_double:
+      name: Expose Down double-press
+      default: false
+      selector:
+        boolean:
+    expose_left_double:
+      name: Expose Left double-press
+      default: false
+      selector:
+        boolean:
+    expose_right_double:
+      name: Expose Right double-press
+      default: false
+      selector:
+        boolean:
+
+    # ------- optional custom actions -------
+    action_up_double:
+      name: (Optional) Up double-press action
+      default: []
+      selector:
+        action:
+    action_down_double:
+      name: (Optional) Down double-press action
+      default: []
+      selector:
+        action:
+    action_left_short:
+      name: (Optional) Left short-press action
+      default: []
+      selector:
+        action:
+    action_left_long:
+      name: (Optional) Left long-press action
+      default: []
+      selector:
+        action:
+    action_left_release:
+      name: (Optional) Left release action
+      default: []
+      selector:
+        action:
+    action_left_double:
+      name: (Optional) Left double-press action
+      default: []
+      selector:
+        action:
+    action_right_short:
+      name: (Optional) Right short-press action
+      default: []
+      selector:
+        action:
+    action_right_long:
+      name: (Optional) Right long-press action
+      default: []
+      selector:
+        action:
+    action_right_release:
+      name: (Optional) Right release action
+      default: []
+      selector:
+        action:
+    action_right_double:
+      name: (Optional) Right double-press action
+      default: []
+      selector:
+        action:
+
+mode: parallel
+max: 10
+max_exceeded: silent
+
+variables:
+  # convert inputs to variables for use in templates
+  lights: !input lights
+  helper_last_event: !input helper_last_event
+  helper_last_command: !input helper_last_command
+  min_kelvin: !input min_kelvin
+  max_kelvin: !input max_kelvin
+  lower_zone_pct: !input lower_zone_pct
+  upper_zone_pct: !input upper_zone_pct
+  kelvin_deadband: !input kelvin_deadband
+  stabilization_delay_ms: !input stabilization_delay_ms
+  brightness_step_pct: !input brightness_step_pct
+  loop_delay_ms: !input loop_delay_ms
+  transition_seconds: !input transition_seconds
+  max_loop_repeats: !input max_loop_repeats
+  double_press_window_ms: !input double_press_window_ms
+  debounce_delay_ms: !input debounce_delay_ms
+  apply_on_turn_on: !input apply_on_turn_on
+  listen_external_changes: !input listen_external_changes
+  expose_up_double: !input expose_up_double
+  expose_down_double: !input expose_down_double
+  expose_left_double: !input expose_left_double
+  expose_right_double: !input expose_right_double
+
+  # adjusted double-press delay accounting for debouncing
+  adjusted_double_press_delay: '{{ [double_press_window_ms - debounce_delay_ms, 100] | max }}'
+
+  # normalised list of light entity_ids (entity selector with multiple: true returns a list)
+  resolved_lights: >-
+    {{ lights if lights is iterable and lights is not string else [lights] }}
+
+triggers:
+  # remote events (Zigbee2MQTT)
+  - trigger: device
+    domain: mqtt
+    device_id: !input controller_device
+    type: action
+    subtype: 'on'
+  - trigger: device
+    domain: mqtt
+    device_id: !input controller_device
+    type: action
+    subtype: 'off'
+  - trigger: device
+    domain: mqtt
+    device_id: !input controller_device
+    type: action
+    subtype: brightness_move_up
+  - trigger: device
+    domain: mqtt
+    device_id: !input controller_device
+    type: action
+    subtype: brightness_move_down
+  - trigger: device
+    domain: mqtt
+    device_id: !input controller_device
+    type: action
+    subtype: brightness_stop
+  - trigger: device
+    domain: mqtt
+    device_id: !input controller_device
+    type: action
+    subtype: arrow_left_click
+  - trigger: device
+    domain: mqtt
+    device_id: !input controller_device
+    type: action
+    subtype: arrow_left_hold
+  - trigger: device
+    domain: mqtt
+    device_id: !input controller_device
+    type: action
+    subtype: arrow_left_release
+  - trigger: device
+    domain: mqtt
+    device_id: !input controller_device
+    type: action
+    subtype: arrow_right_click
+  - trigger: device
+    domain: mqtt
+    device_id: !input controller_device
+    type: action
+    subtype: arrow_right_hold
+  - trigger: device
+    domain: mqtt
+    device_id: !input controller_device
+    type: action
+    subtype: arrow_right_release
+
+  # external brightness changes
+  - trigger: state
+    entity_id: !input lights
+    attribute: brightness
+    id: external_state
+
+actions:
+  # determine event class once
+  - variables:
+      event_class: '{{ "external" if trigger.id == "external_state" else "remote" }}'
+      trigger_action: >-
+        {{ trigger.payload | default("", true) if event_class == "remote" else "" }}
+
+  - choose:
+      # ============================================================
+      # Branch A: external brightness change on a tracked light
+      # ============================================================
+      - conditions:
+          - '{{ event_class == "external" }}'
+          - '{{ listen_external_changes }}'
+          - '{{ trigger.to_state is not none }}'
+          - '{{ trigger.to_state.state == "on" }}'
+          - '{{ trigger.to_state.attributes.brightness is not none }}'
+        sequence:
+          - variables:
+              changed_entity: '{{ trigger.entity_id }}'
+              new_brightness: '{{ trigger.to_state.attributes.brightness | int(0) }}'
+              new_brightness_pct: '{{ ((new_brightness / 255) * 100) | round(0) }}'
+              # parse last command helper: {"e":entity,"b":brightness_0_255,"k":kelvin,"t":timestamp}
+              last_cmd_raw: '{{ states(helper_last_command) }}'
+              last_cmd: >-
+                {{ (last_cmd_raw | from_json)
+                   if last_cmd_raw is string
+                      and last_cmd_raw | regex_match('^\{.*\}$')
+                   else {} }}
+              cmd_age_ms: '{{ ((as_timestamp(now()) - (last_cmd.t | default(0))) * 1000) | int }}'
+              is_echo: >-
+                {{ last_cmd.e | default('') == changed_entity
+                   and (last_cmd.b | default(-999) | int(-999) - new_brightness) | abs <= 5
+                   and cmd_age_ms <= stabilization_delay_ms | int }}
+              # compute target kelvin from dim-to-warm curve
+              lz: '{{ lower_zone_pct | float(10) }}'
+              uz: '{{ upper_zone_pct | float(90) }}'
+              mn: '{{ min_kelvin | float(2500) }}'
+              mx: '{{ max_kelvin | float(4000) }}'
+              target_kelvin: >-
+                {%- set p = new_brightness_pct | float(0) -%}
+                {%- if p <= lz -%}
+                  {{ mn | int }}
+                {%- elif p >= uz -%}
+                  {{ mx | int }}
+                {%- else -%}
+                  {%- set frac = (p - lz) / (uz - lz) -%}
+                  {{ (mn + frac * (mx - mn)) | round(0) | int }}
+                {%- endif -%}
+              current_kelvin: '{{ trigger.to_state.attributes.color_temp_kelvin | int(0) }}'
+              kelvin_delta: '{{ (target_kelvin | int - current_kelvin | int) | abs }}'
+          - choose:
+              - conditions:
+                  - '{{ not is_echo }}'
+                  - '{{ kelvin_delta >= kelvin_deadband | int }}'
+                sequence:
+                  - action: light.turn_on
+                    target:
+                      entity_id: '{{ changed_entity }}'
+                    data:
+                      color_temp_kelvin: '{{ target_kelvin | int }}'
+                      transition: '{{ transition_seconds | float(0.3) }}'
+                  - action: input_text.set_value
+                    target:
+                      entity_id: '{{ helper_last_command }}'
+                    data:
+                      value: >-
+                        {{ {"e": changed_entity,
+                            "b": new_brightness,
+                            "k": target_kelvin | int,
+                            "t": as_timestamp(now())} | to_json }}
+
+      # ============================================================
+      # Branch B: remote event
+      # ============================================================
+      - conditions:
+          - '{{ event_class == "remote" }}'
+          - '{{ trigger_action not in ["", "None", "unknown"] }}'
+        sequence:
+          # debouncing
+          - delay:
+              milliseconds: !input debounce_delay_ms
+
+          # read previous remote event (for double-press detection)
+          - variables:
+              last_evt_raw: '{{ states(helper_last_event) }}'
+              last_evt: >-
+                {{ (last_evt_raw | from_json)
+                   if last_evt_raw is string
+                      and last_evt_raw | regex_match('^\{.*\}$')
+                   else {} }}
+              last_action: '{{ last_evt.a | default("") }}'
+              last_evt_age_ms: '{{ ((as_timestamp(now()) - (last_evt.t | default(0))) * 1000) | int }}'
+              # dim-to-warm parameters as numerics
+              lz: '{{ lower_zone_pct | float(10) }}'
+              uz: '{{ upper_zone_pct | float(90) }}'
+              mn: '{{ min_kelvin | float(2500) }}'
+              mx: '{{ max_kelvin | float(4000) }}'
+
+          # update last-event helper
+          - action: input_text.set_value
+            target:
+              entity_id: '{{ helper_last_event }}'
+            data:
+              value: '{{ {"a": trigger_action, "t": as_timestamp(now())} | to_json }}'
+
+          # dispatch
+          - choose:
+              # --- UP short / double ---
+              - conditions: '{{ trigger_action == "on" }}'
+                sequence:
+                  - choose:
+                      - conditions:
+                          - '{{ expose_up_double }}'
+                          - '{{ last_action == "on" and last_evt_age_ms <= double_press_window_ms | int }}'
+                        sequence:
+                          - action: input_text.set_value
+                            target:
+                              entity_id: '{{ helper_last_event }}'
+                            data:
+                              value: '{{ {"a": "double_up", "t": as_timestamp(now())} | to_json }}'
+                          - choose:
+                              - conditions: []
+                                sequence: !input action_up_double
+                      - conditions: '{{ expose_up_double }}'
+                        sequence:
+                          - delay:
+                              milliseconds: '{{ adjusted_double_press_delay }}'
+                          - action: light.turn_on
+                            target:
+                              entity_id: !input lights
+                            data:
+                              transition: '{{ transition_seconds | float(0.3) }}'
+                          - if:
+                              - '{{ apply_on_turn_on }}'
+                            then:
+                              - delay:
+                                  milliseconds: 200
+                              - repeat:
+                                  for_each: '{{ resolved_lights }}'
+                                  sequence:
+                                    # apply dim-to-warm to each light based on its current brightness
+                                    - variables:
+                                        ent: '{{ repeat.item }}'
+                                        br: '{{ state_attr(ent, "brightness") | int(0) }}'
+                                        br_pct: '{{ ((br / 255) * 100) | round(0) }}'
+                                        tk: >-
+                                          {%- set p = br_pct | float(0) -%}
+                                          {%- if p <= lz -%}
+                                            {{ mn | int }}
+                                          {%- elif p >= uz -%}
+                                            {{ mx | int }}
+                                          {%- else -%}
+                                            {%- set frac = (p - lz) / (uz - lz) -%}
+                                            {{ (mn + frac * (mx - mn)) | round(0) | int }}
+                                          {%- endif -%}
+                                    - if:
+                                        - '{{ states(ent) == "on" and br > 0 }}'
+                                      then:
+                                        - action: light.turn_on
+                                          target:
+                                            entity_id: '{{ ent }}'
+                                          data:
+                                            color_temp_kelvin: '{{ tk | int }}'
+                                            transition: '{{ transition_seconds | float(0.3) }}'
+                                        - action: input_text.set_value
+                                          target:
+                                            entity_id: '{{ helper_last_command }}'
+                                          data:
+                                            value: >-
+                                              {{ {"e": ent, "b": br,
+                                                  "k": tk | int,
+                                                  "t": as_timestamp(now())} | to_json }}
+                    default:
+                      - action: light.turn_on
+                        target:
+                          entity_id: !input lights
+                        data:
+                          transition: '{{ transition_seconds | float(0.3) }}'
+
+              # --- DOWN short / double ---
+              - conditions: '{{ trigger_action == "off" }}'
+                sequence:
+                  - choose:
+                      - conditions:
+                          - '{{ expose_down_double }}'
+                          - '{{ last_action == "off" and last_evt_age_ms <= double_press_window_ms | int }}'
+                        sequence:
+                          - action: input_text.set_value
+                            target:
+                              entity_id: '{{ helper_last_event }}'
+                            data:
+                              value: '{{ {"a": "double_down", "t": as_timestamp(now())} | to_json }}'
+                          - choose:
+                              - conditions: []
+                                sequence: !input action_down_double
+                      - conditions: '{{ expose_down_double }}'
+                        sequence:
+                          - delay:
+                              milliseconds: '{{ adjusted_double_press_delay }}'
+                          - action: light.turn_off
+                            target:
+                              entity_id: !input lights
+                            data:
+                              transition: '{{ transition_seconds | float(0.3) }}'
+                    default:
+                      - action: light.turn_off
+                        target:
+                          entity_id: !input lights
+                        data:
+                          transition: '{{ transition_seconds | float(0.3) }}'
+
+              # --- UP long: brighten + dim-to-warm loop ---
+              - conditions: '{{ trigger_action == "brightness_move_up" }}'
+                sequence:
+                  - repeat:
+                      while:
+                        - '{{ repeat.index <= max_loop_repeats | int }}'
+                      sequence:
+                        - repeat:
+                            for_each: '{{ resolved_lights }}'
+                            sequence:
+                              - variables:
+                                  ent: '{{ repeat.item }}'
+                                  cur_br: '{{ state_attr(ent, "brightness") | int(0) }}'
+                                  cur_br_pct: '{{ ((cur_br / 255) * 100) | round(0) }}'
+                                  step: '{{ brightness_step_pct | int(10) }}'
+                                  new_pct: '{{ [cur_br_pct + step, 100] | min }}'
+                                  new_br: '{{ ((new_pct / 100) * 255) | round(0) | int }}'
+                                  tk: >-
+                                    {%- set p = new_pct | float(0) -%}
+                                    {%- if p <= lz -%}
+                                      {{ mn | int }}
+                                    {%- elif p >= uz -%}
+                                      {{ mx | int }}
+                                    {%- else -%}
+                                      {%- set frac = (p - lz) / (uz - lz) -%}
+                                      {{ (mn + frac * (mx - mn)) | round(0) | int }}
+                                    {%- endif -%}
+                              - action: light.turn_on
+                                target:
+                                  entity_id: '{{ ent }}'
+                                data:
+                                  brightness_pct: '{{ new_pct | int }}'
+                                  color_temp_kelvin: '{{ tk | int }}'
+                                  transition: '{{ (loop_delay_ms | float(250) / 1000) }}'
+                              - action: input_text.set_value
+                                target:
+                                  entity_id: '{{ helper_last_command }}'
+                                data:
+                                  value: >-
+                                    {{ {"e": ent, "b": new_br,
+                                        "k": tk | int,
+                                        "t": as_timestamp(now())} | to_json }}
+                        - delay:
+                            milliseconds: '{{ loop_delay_ms | int }}'
+
+              # --- DOWN long: dim + dim-to-warm loop ---
+              - conditions: '{{ trigger_action == "brightness_move_down" }}'
+                sequence:
+                  - repeat:
+                      while:
+                        - '{{ repeat.index <= max_loop_repeats | int }}'
+                      sequence:
+                        - repeat:
+                            for_each: '{{ resolved_lights }}'
+                            sequence:
+                              - variables:
+                                  ent: '{{ repeat.item }}'
+                                  cur_br: '{{ state_attr(ent, "brightness") | int(0) }}'
+                                  cur_br_pct: '{{ ((cur_br / 255) * 100) | round(0) }}'
+                                  step: '{{ brightness_step_pct | int(10) }}'
+                                  new_pct: '{{ [cur_br_pct - step, 1] | max }}'
+                                  new_br: '{{ ((new_pct / 100) * 255) | round(0) | int }}'
+                                  tk: >-
+                                    {%- set p = new_pct | float(0) -%}
+                                    {%- if p <= lz -%}
+                                      {{ mn | int }}
+                                    {%- elif p >= uz -%}
+                                      {{ mx | int }}
+                                    {%- else -%}
+                                      {%- set frac = (p - lz) / (uz - lz) -%}
+                                      {{ (mn + frac * (mx - mn)) | round(0) | int }}
+                                    {%- endif -%}
+                              - action: light.turn_on
+                                target:
+                                  entity_id: '{{ ent }}'
+                                data:
+                                  brightness_pct: '{{ new_pct | int }}'
+                                  color_temp_kelvin: '{{ tk | int }}'
+                                  transition: '{{ (loop_delay_ms | float(250) / 1000) }}'
+                              - action: input_text.set_value
+                                target:
+                                  entity_id: '{{ helper_last_command }}'
+                                data:
+                                  value: >-
+                                    {{ {"e": ent, "b": new_br,
+                                        "k": tk | int,
+                                        "t": as_timestamp(now())} | to_json }}
+                        - delay:
+                            milliseconds: '{{ loop_delay_ms | int }}'
+
+              # --- brightness stop: nothing to do; the next press cancels via parallel mode ---
+              - conditions: '{{ trigger_action == "brightness_stop" }}'
+                sequence:
+                  - stop: brightness move released
+
+              # --- LEFT short / double ---
+              - conditions: '{{ trigger_action == "arrow_left_click" }}'
+                sequence:
+                  - choose:
+                      - conditions:
+                          - '{{ expose_left_double }}'
+                          - '{{ last_action == "arrow_left_click" and last_evt_age_ms <= double_press_window_ms | int }}'
+                        sequence:
+                          - action: input_text.set_value
+                            target:
+                              entity_id: '{{ helper_last_event }}'
+                            data:
+                              value: '{{ {"a": "double_left", "t": as_timestamp(now())} | to_json }}'
+                          - choose:
+                              - conditions: []
+                                sequence: !input action_left_double
+                      - conditions: '{{ expose_left_double }}'
+                        sequence:
+                          - delay:
+                              milliseconds: '{{ adjusted_double_press_delay }}'
+                          - choose:
+                              - conditions: []
+                                sequence: !input action_left_short
+                    default:
+                      - choose:
+                          - conditions: []
+                            sequence: !input action_left_short
+
+              # --- LEFT long ---
+              - conditions: '{{ trigger_action == "arrow_left_hold" }}'
+                sequence:
+                  - choose:
+                      - conditions: []
+                        sequence: !input action_left_long
+
+              # --- LEFT release ---
+              - conditions: '{{ trigger_action == "arrow_left_release" }}'
+                sequence:
+                  - choose:
+                      - conditions: []
+                        sequence: !input action_left_release
+
+              # --- RIGHT short / double ---
+              - conditions: '{{ trigger_action == "arrow_right_click" }}'
+                sequence:
+                  - choose:
+                      - conditions:
+                          - '{{ expose_right_double }}'
+                          - '{{ last_action == "arrow_right_click" and last_evt_age_ms <= double_press_window_ms | int }}'
+                        sequence:
+                          - action: input_text.set_value
+                            target:
+                              entity_id: '{{ helper_last_event }}'
+                            data:
+                              value: '{{ {"a": "double_right", "t": as_timestamp(now())} | to_json }}'
+                          - choose:
+                              - conditions: []
+                                sequence: !input action_right_double
+                      - conditions: '{{ expose_right_double }}'
+                        sequence:
+                          - delay:
+                              milliseconds: '{{ adjusted_double_press_delay }}'
+                          - choose:
+                              - conditions: []
+                                sequence: !input action_right_short
+                    default:
+                      - choose:
+                          - conditions: []
+                            sequence: !input action_right_short
+
+              # --- RIGHT long ---
+              - conditions: '{{ trigger_action == "arrow_right_hold" }}'
+                sequence:
+                  - choose:
+                      - conditions: []
+                        sequence: !input action_right_long
+
+              # --- RIGHT release ---
+              - conditions: '{{ trigger_action == "arrow_right_release" }}'
+                sequence:
+                  - choose:
+                      - conditions: []
+                        sequence: !input action_right_release

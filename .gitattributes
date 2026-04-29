@@ -1,0 +1,14 @@
+# Force LF line endings for everything text-y so yamllint and HA stay happy
+# regardless of the contributor's OS.
+* text=auto eol=lf
+*.yaml text eol=lf
+*.yml  text eol=lf
+*.sh   text eol=lf
+*.md   text eol=lf
+*.json text eol=lf
+
+# Binary safety net (no LF normalisation for these)
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary

@@ -1,0 +1,83 @@
+name: Blueprint test suite
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref to save runner minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  yaml-syntax:
+    name: YAML + !input parse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pre-pull HA image
+        run: docker pull ghcr.io/home-assistant/home-assistant:stable
+      - name: Layer 1
+        run: bash scripts/validate-blueprints.sh --layer 1
+
+  ha-check-config:
+    name: HA check_config (stable)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pre-pull HA image
+        run: docker pull ghcr.io/home-assistant/home-assistant:stable
+      - name: Layer 2
+        run: bash scripts/validate-blueprints.sh --layer 2
+
+  ha-check-config-beta:
+    name: HA check_config (beta, advisory)
+    runs-on: ubuntu-latest
+    # Don't fail the suite on upstream HA-beta regressions; surface them only.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pre-pull HA image
+        run: docker pull ghcr.io/home-assistant/home-assistant:beta
+      - name: Layer 2 against :beta
+        run: bash scripts/validate-blueprints.sh --layer 2 --image ghcr.io/home-assistant/home-assistant:beta
+
+  yamllint:
+    name: yamllint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run yamllint (Dockerised, no host install)
+        run: |
+          docker run --rm \
+            --mount "type=bind,source=${{ github.workspace }},target=/repo,readonly" \
+            --workdir /repo \
+            cytopia/yamllint:latest \
+            -c .yamllint blueprints/
+
+  test-suite:
+    # Single status check to require in branch protection.
+    name: test-suite
+    runs-on: ubuntu-latest
+    needs: [yaml-syntax, ha-check-config, yamllint]
+    if: ${{ always() }}
+    steps:
+      - name: Aggregate required job results
+        run: |
+          set -e
+          fail=0
+          for r in "${{ needs.yaml-syntax.result }}" \
+                   "${{ needs.ha-check-config.result }}" \
+                   "${{ needs.yamllint.result }}"; do
+            if [[ "$r" != "success" ]]; then fail=1; fi
+          done
+          if [[ $fail -ne 0 ]]; then
+            echo "One or more required jobs failed."
+            exit 1
+          fi
+          echo "All required jobs passed."

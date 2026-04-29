@@ -1,0 +1,8 @@
+{
+  // VS Code surfaces these as "Workspace recommendations" on first open.
+  "recommendations": [
+    "redhat.vscode-yaml",
+    "editorconfig.editorconfig",
+    "timonwong.shellcheck"
+  ]
+}

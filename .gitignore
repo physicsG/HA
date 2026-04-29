@@ -1,0 +1,16 @@
+# Home Assistant runtime artefacts that check_config can leave behind
+.ha-validate/.storage/
+.ha-validate/.cloud/
+.ha-validate/deps/
+.ha-validate/tts/
+.ha-validate/home-assistant*.log*
+.ha-validate/home-assistant_v2.db*
+
+# Stray copies of blueprints under the validator's mount target.
+# The script bind-mounts the source tree directly; nothing should land here.
+.ha-validate/blueprints/automation/local/*.yaml
+.ha-validate/blueprints/automation/local/*.yml
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db

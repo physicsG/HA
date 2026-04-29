@@ -1,0 +1,22 @@
+# yamllint config tuned for Home Assistant blueprint YAML.
+# HA blueprints intentionally use long Jinja templates and don't ship
+# document-start markers, so the strictest defaults are relaxed.
+extends: default
+
+ignore: |
+  .ha-validate/
+  blueprints/automation/references/
+
+rules:
+  line-length: disable
+  document-start: disable
+  truthy:
+    check-keys: false
+  comments-indentation: disable
+  indentation:
+    spaces: 2
+    indent-sequences: true
+  braces:
+    max-spaces-inside: 1
+  brackets:
+    max-spaces-inside: 1

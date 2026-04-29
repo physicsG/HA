@@ -1,0 +1,60 @@
+{
+  // ---- Editor defaults (mirror .editorconfig so even contributors without it match) ----
+  "editor.tabSize": 2,
+  "editor.insertSpaces": true,
+  "editor.detectIndentation": false,
+  "files.eol": "\n",
+  "files.insertFinalNewline": true,
+  "files.trimTrailingWhitespace": true,
+
+  // Markdown often uses 2 trailing spaces for hard line breaks.
+  "[markdown]": {
+    "files.trimTrailingWhitespace": false
+  },
+
+  // ---- YAML (Red Hat) ----
+  "[yaml]": {
+    "editor.defaultFormatter": "redhat.vscode-yaml",
+    "editor.formatOnSave": true,
+    "editor.tabSize": 2,
+    "editor.autoIndent": "advanced"
+  },
+
+  // Tell the YAML language server about Home Assistant's custom tags so they
+  // don't get flagged as errors.
+  "yaml.customTags": [
+    "!input scalar",
+    "!secret scalar",
+    "!include scalar",
+    "!include_dir_list scalar",
+    "!include_dir_named scalar",
+    "!include_dir_merge_list scalar",
+    "!include_dir_merge_named scalar"
+  ],
+
+  // Best-effort schema mapping. SchemaStore's HA schema is partial; if it
+  // produces noise on a given blueprint, override per-file with:
+  //   # yaml-language-server: $schema=
+  // on the first line to disable validation for that file.
+  "yaml.schemas": {
+    "https://json.schemastore.org/home-assistant.json": [
+      "blueprints/**/*.yaml",
+      ".ha-validate/configuration.yaml"
+    ]
+  },
+  "yaml.validate": true,
+  "yaml.format.enable": true,
+  "yaml.format.singleQuote": true,
+  "yaml.format.bracketSpacing": true,
+
+  // ---- ShellCheck ----
+  "shellcheck.enable": true,
+  "shellcheck.run": "onSave",
+
+  // ---- Files ----
+  // Don't waste indexer cycles on the validator's mount target.
+  "files.watcherExclude": {
+    "**/.ha-validate/.storage/**": true,
+    "**/.ha-validate/deps/**": true
+  }
+}
