@@ -7,13 +7,13 @@
 # Credits (both MIT-licensed):
 #   - STYRBAR z2m triggers, double-press detection, helper-based last-event pattern
 #     adapted from: https://github.com/EPMatt/awesome-ha-blueprints
-#   - Dim-to-warm Kelvin interpolation, deadband, stabilization concept
+#   - Dim-to-warm Kelvin interpolation concept
 #     adapted from: https://github.com/robblids/ha-dim-to-warm
 #
 # Required helpers (create both as input_text in Settings -> Devices & Services -> Helpers):
 #   - one for "last event"   (double-press detection)
-#   - one for "light state"  (group brightness + Kelvin snapshot used by both
-#                              the long-press loop and echo suppression)
+#   - one for "light state"  (group brightness + Kelvin snapshot used by the
+#                              long-press loop)
 #
 blueprint:
   name: STYRBAR + Dim-to-Warm
@@ -22,14 +22,12 @@ blueprint:
 
     Use an IKEA E2001/E2002 STYRBAR remote (Zigbee2MQTT) to control one or more
     lights. Brightness changes automatically shift color temperature (Hue-style
-    "dim to warm"). Optionally also reacts to external brightness changes from
-    the HA UI, voice assistants, or other automations.
+    "dim to warm").
 
     **Required helpers** (create both before importing):
       - `input_text` for **last event** (double-press detection)
       - `input_text` for **light state** (group `{brightness, kelvin}` snapshot —
-        used as the source of truth for the dim loop and to suppress echoes from
-        the blueprint's own commands)
+        the source of truth for the dim-to-warm loop)
 
     All selected lights are treated as one group: brightness and Kelvin are
     computed once per step and applied to every light in the same call.
@@ -126,8 +124,8 @@ blueprint:
           mode: slider
     kelvin_deadband:
       name: Kelvin deadband
-      description: Ignore external brightness changes whose computed Kelvin shift is
-        smaller than this. Helps prevent feedback loops.
+      description: Minimum Kelvin shift required before applying a Kelvin update
+        inside the dim loop.
       default: 25
       selector:
         number:
@@ -135,18 +133,6 @@ blueprint:
           max: 200
           step: 5
           unit_of_measurement: K
-          mode: slider
-    stabilization_delay_ms:
-      name: Stabilization delay (ms)
-      description: Time window after the blueprint sets a light's value during which
-        echoed `state_changed` events for that light are ignored.
-      default: 150
-      selector:
-        number:
-          min: 0
-          max: 1000
-          step: 50
-          unit_of_measurement: ms
           mode: slider
 
     # ------- loop / timing -------
@@ -226,15 +212,6 @@ blueprint:
       default: true
       selector:
         boolean:
-    listen_external_changes:
-      name: React to external brightness changes
-      description: When enabled, the blueprint also listens for `state_changed` events
-        on the selected lights and re-applies the dim-to-warm curve. Echoes from
-        the blueprint's own commands are suppressed via the light-state helper
-        plus stabilization delay.
-      default: true
-      selector:
-        boolean:
     expose_up_double:
       name: Expose Up double-press
       description: Enable to use the Up double-press action. Adds the double-press
@@ -311,11 +288,9 @@ blueprint:
         action:
 
           # Restart mode (matching upstream STYRBAR blueprint): any new trigger -- including
-          # the brightness_stop release event, an external state_changed echo, or a fresh
-          # button press -- cancels the running long-press loop. This is the loop-stop
-          # mechanism; max_loop_repeats is just a safety cap. Restart also guarantees only
-          # one Branch-A (state_changed) reaction is in flight, preventing the
-          # 1 -> N -> N^2 amplification that occurred under mode: parallel.
+          # the brightness_stop release event or a fresh button press -- cancels the running
+          # long-press loop. This is the loop-stop mechanism; max_loop_repeats is just a
+          # safety cap.
 mode: restart
 max_exceeded: silent
 
@@ -329,7 +304,6 @@ variables:
   lower_zone_pct: !input lower_zone_pct
   upper_zone_pct: !input upper_zone_pct
   kelvin_deadband: !input kelvin_deadband
-  stabilization_delay_ms: !input stabilization_delay_ms
   brightness_step_pct: !input brightness_step_pct
   loop_delay_ms: !input loop_delay_ms
   transition_seconds: !input transition_seconds
@@ -337,7 +311,6 @@ variables:
   double_press_window_ms: !input double_press_window_ms
   debounce_delay_ms: !input debounce_delay_ms
   apply_on_turn_on: !input apply_on_turn_on
-  listen_external_changes: !input listen_external_changes
   expose_up_double: !input expose_up_double
   expose_down_double: !input expose_down_double
   expose_left_double: !input expose_left_double
@@ -408,119 +381,15 @@ triggers:
     type: action
     subtype: arrow_right_release
 
-  # external brightness changes
-  - trigger: state
-    entity_id: !input lights
-    attribute: brightness
-    id: external_state
-
 actions:
-  # determine event class once
   - variables:
-      event_class: '{{ "external" if trigger.id == "external_state" else "remote" }}'
-      trigger_action: >-
-        {{ trigger.payload | default("", true) if event_class == "remote" else
-        "" }}
+      trigger_action: '{{ trigger.payload | default("", true) }}'
 
   - choose:
       # ============================================================
-      # Branch A: external brightness change on a tracked light.
-      # Treat all selected lights as one group: re-apply (b, k) once.
+      # Remote event
       # ============================================================
       - conditions:
-          - '{{ event_class == "external" }}'
-          - '{{ listen_external_changes }}'
-          - '{{ trigger.to_state is not none }}'
-          - '{{ trigger.to_state.state == "on" }}'
-          - '{{ trigger.to_state.attributes.brightness is not none }}'
-        sequence:
-          - variables:
-              new_brightness: '{{ trigger.to_state.attributes.brightness | int(0) }}'
-              new_brightness_pct: '{{ ((new_brightness / 255) * 100) | round(0) }}'
-              # parse light-state helper: {"b":<0-255>,"k":<kelvin>,"t":<epoch>}
-              ls_raw: '{{ states(helper_light_state) }}'
-              ls: >-
-                {{ (ls_raw | from_json)
-                   if ls_raw is string
-                      and ls_raw | regex_match('^\{.*\}$')
-                   else {} }}
-              ls_age_ms: '{{ ((as_timestamp(now()) - (ls.t | default(0))) * 1000) | int }}'
-              # parse remote-event helper to detect a recent button press --
-              # state_changed events fired during/after the press are ours, not external
-              le_raw: '{{ states(helper_last_event) }}'
-              le: >-
-                {{ (le_raw | from_json)
-                   if le_raw is string
-                      and le_raw | regex_match('^\{.*\}$')
-                   else {} }}
-              le_age_ms: '{{ ((as_timestamp(now()) - (le.t | default(0))) * 1000) | int }}'
-              # remote lockout: ignore state changes for stabilization_delay_ms
-              # plus the transition window after any remote action
-              remote_lockout_ms: >-
-                {{ (stabilization_delay_ms | int)
-                   + ((transition_seconds | float(0.3)) * 1000) | int + 200 }}
-              remote_recent: '{{ le_age_ms <= remote_lockout_ms | int }}'
-              # compute target kelvin from dim-to-warm curve
-              lz: '{{ lower_zone_pct | float(10) }}'
-              uz: '{{ upper_zone_pct | float(90) }}'
-              mn: '{{ min_kelvin | float(2500) }}'
-              mx: '{{ max_kelvin | float(4000) }}'
-              target_kelvin: >-
-                {%- set p = new_brightness_pct | float(0) -%} {%- if p <= lz -%}
-                  {{ mn | int }}
-                {%- elif p >= uz -%}
-                  {{ mx | int }}
-                {%- else -%}
-                  {%- set frac = (p - lz) / (uz - lz) -%}
-                  {{ (mn + frac * (mx - mn)) | round(0) | int }}
-                {%- endif -%}
-              # echo suppression:
-              #   1. If a remote button was pressed recently, the state changes
-              #      we are seeing are caused by us (or by the remote's own
-              #      brightness_move loop). Always suppress.
-              #   2. Inside the stabilization window after our own light command,
-              #      treat *any* state_changed as an echo (transitions emit a
-              #      stream of intermediate brightness values that the +/-5 check
-              #      would miss).
-              #   3. Outside both windows, only suppress when both brightness and
-              #      kelvin already match the snapshot (defends against duplicate
-              #      events without blocking real external changes).
-              in_stab_window: '{{ ls_age_ms <= stabilization_delay_ms | int }}'
-              is_echo: >-
-                {{ remote_recent
-                   or in_stab_window
-                   or ((ls.b | default(-999) | int(-999) - new_brightness) | abs <= 5
-                       and (ls.k | default(-9999) | int(-9999) - target_kelvin | int) | abs
-                           <= kelvin_deadband | int) }}
-              current_kelvin: '{{ trigger.to_state.attributes.color_temp_kelvin | int(0) }}'
-              kelvin_delta: '{{ (target_kelvin | int - current_kelvin | int) | abs }}'
-          - choose:
-              - conditions:
-                  - '{{ not is_echo }}'
-                  - '{{ kelvin_delta >= kelvin_deadband | int }}'
-                sequence:
-                  # one group call: re-assert brightness alongside the new kelvin
-                  - action: light.turn_on
-                    target:
-                      entity_id: !input lights
-                    data:
-                      brightness: '{{ new_brightness }}'
-                      color_temp_kelvin: '{{ target_kelvin | int }}'
-                      transition: '{{ transition_seconds | float(0.3) }}'
-                  - action: input_text.set_value
-                    target:
-                      entity_id: '{{ helper_light_state }}'
-                    data:
-                      value: >-
-                        {{ {"b": new_brightness,
-                            "k": target_kelvin | int,
-                            "t": as_timestamp(now())} | to_json }}
-
-      # ============================================================
-      # Branch B: remote event
-      # ============================================================
-      - conditions:
-          - '{{ event_class == "remote" }}'
           - '{{ trigger_action not in ["", "None", "unknown"] }}'
         sequence:
           # debouncing
