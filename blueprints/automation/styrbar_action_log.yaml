@@ -1,0 +1,124 @@
+# Styrbar action logger — DEBUG blueprint
+#
+# Purpose: record every action the IKEA STYRBAR (Z2M) emits so you can
+#          confirm which subtypes are actually published (arrow_left_hold,
+#          arrow_left_release, etc.) and how Z2M sequences them.
+#
+# Setup:
+#   1. Create an input_text helper (Settings → Devices & services → Helpers
+#      → Create helper → Text). Recommended max length: 100.
+#   2. Save this file as
+#         config/blueprints/automation/local/styrbar_action_log.yaml
+#      (or import via Settings → Automations & Scenes → Blueprints → Import).
+#   3. Settings → Automations → Create → "Styrbar action logger (DEBUG)".
+#      Pick your STYRBAR device and the helper, save.
+#   4. Press buttons. Watch the helper in Developer Tools → States, and
+#      full payloads in Settings → System → Logs (logger: styrbar_debug).
+
+blueprint:
+  name: "Styrbar action logger (DEBUG)"
+  description: >
+    Logs every action emitted by an IKEA STYRBAR (Z2M) into an input_text
+    helper and to the system log. Useful for confirming which subtypes the
+    device actually publishes (e.g. arrow_left_hold, arrow_left_release).
+  domain: automation
+  homeassistant:
+    min_version: "2024.10.0"
+  input:
+    controller_device:
+      name: "STYRBAR remote (Z2M)"
+      description: "The Zigbee2MQTT STYRBAR device to monitor."
+      selector:
+        device:
+          filter:
+            - integration: mqtt
+              manufacturer: IKEA
+              model: STYRBAR remote control
+            - integration: mqtt
+              manufacturer: IKEA
+              model: STYRBAR remote control (E2001/E2002)
+          multiple: false
+    log_helper:
+      name: "Action log helper (input_text)"
+      description: >
+        input_text that will be overwritten with each new action and timestamp.
+      selector:
+        entity:
+          domain: input_text
+
+variables:
+  v_log_helper: !input log_helper
+
+mode: queued
+max: 20
+
+triggers:
+  - trigger: device
+    domain: mqtt
+    device_id: !input controller_device
+    type: action
+    subtype: arrow_left_click
+  - trigger: device
+    domain: mqtt
+    device_id: !input controller_device
+    type: action
+    subtype: arrow_left_hold
+  - trigger: device
+    domain: mqtt
+    device_id: !input controller_device
+    type: action
+    subtype: arrow_left_release
+  - trigger: device
+    domain: mqtt
+    device_id: !input controller_device
+    type: action
+    subtype: arrow_right_click
+  - trigger: device
+    domain: mqtt
+    device_id: !input controller_device
+    type: action
+    subtype: arrow_right_hold
+  - trigger: device
+    domain: mqtt
+    device_id: !input controller_device
+    type: action
+    subtype: arrow_right_release
+  - trigger: device
+    domain: mqtt
+    device_id: !input controller_device
+    type: action
+    subtype: "on"
+  - trigger: device
+    domain: mqtt
+    device_id: !input controller_device
+    type: action
+    subtype: "off"
+  - trigger: device
+    domain: mqtt
+    device_id: !input controller_device
+    type: action
+    subtype: brightness_move_up
+  - trigger: device
+    domain: mqtt
+    device_id: !input controller_device
+    type: action
+    subtype: brightness_move_down
+  - trigger: device
+    domain: mqtt
+    device_id: !input controller_device
+    type: action
+    subtype: brightness_stop
+
+actions:
+  - variables:
+      v_action: "{{ trigger.payload | default('') }}"
+  - action: input_text.set_value
+    target:
+      entity_id: "{{ v_log_helper }}"
+    data:
+      value: "{{ now().strftime('%H:%M:%S') }} {{ v_action }}"
+  - action: system_log.write
+    data:
+      level: info
+      logger: styrbar_debug
+      message: "STYRBAR action={{ v_action }}"
