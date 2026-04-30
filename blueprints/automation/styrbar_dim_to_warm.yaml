@@ -30,7 +30,29 @@ blueprint:
     min_version: "2024.10.0"
   input:
     # ══════════════════════════════════════════════════════════
-    #  Hardware & helpers
+    #  Helpers
+    # ══════════════════════════════════════════════════════════
+    helper_last_controller_event:
+      name: "Helper — Last controller event"
+      description: >
+        input_text used to remember the last button event so double-press and
+        release-after-hold can be detected. Create this manually under Settings
+        → Devices & services → Helpers.
+      selector:
+        entity:
+          domain: input_text
+    helper_state:
+      name: "Helper — Dim/Kelvin state"
+      description: >
+        input_text storing the last commanded brightness and kelvin as JSON,
+        e.g. {"b":180,"k":2700}. Create this manually under Settings → Devices &
+        services → Helpers.
+      selector:
+        entity:
+          domain: input_text
+
+    # ══════════════════════════════════════════════════════════
+    #  Hardware
     # ══════════════════════════════════════════════════════════
     controller_device:
       name: "STYRBAR remote (Z2M)"
@@ -45,15 +67,6 @@ blueprint:
               manufacturer: IKEA
               model: STYRBAR remote control (E2001/E2002)
           multiple: false
-    helper_last_controller_event:
-      name: "Helper — Last controller event"
-      description: >
-        input_text used to remember the last button event so double-press and
-        release-after-hold can be detected. Create this manually under Settings
-        → Devices & services → Helpers.
-      selector:
-        entity:
-          domain: input_text
     target_lights:
       name: "Target light(s)"
       description: >
@@ -64,19 +77,18 @@ blueprint:
         entity:
           domain: light
           multiple: true
-    helper_state:
-      name: "Helper — Dim/Kelvin state"
-      description: >
-        input_text storing the last commanded brightness and kelvin as JSON,
-        e.g. {"b":180,"k":2700}. Create this manually under Settings → Devices &
-        services → Helpers.
-      selector:
-        entity:
-          domain: input_text
 
     # ══════════════════════════════════════════════════════════
     #  Dim-to-warm tuning
     # ══════════════════════════════════════════════════════════
+    dim_to_warm_enabled:
+      name: "Change color with brightness"
+      description: >
+        When enabled (default), the color temperature is recomputed and sent
+        alongside every brightness change. When disabled, only brightness is
+        sent — the lights keep whatever color they currently have.
+      default: true
+      selector: { boolean: {} }
     min_kelvin:
       name: "Min Kelvin (at lowest brightness)"
       default: 2200
@@ -291,6 +303,7 @@ variables:
 
   # ── Lights & dim-to-warm tuning ──
   v_target_lights: !input target_lights
+  v_dim_to_warm: !input dim_to_warm_enabled
   v_min_kelvin: !input min_kelvin
   v_max_kelvin: !input max_kelvin
   v_default_brightness: !input default_brightness
@@ -556,12 +569,19 @@ actions:
                       - choose:
                           - conditions: "{{ not any_on }}"
                             sequence:
+                              - if: "{{ v_dim_to_warm }}"
+                                then:
+                                  - action: light.turn_on
+                                    target:
+                                      entity_id: !input target_lights
+                                    data:
+                                      color_temp_kelvin: "{{ cur_k | int }}"
+                                      transition: "{{ v_transition | float(0) }}"
                               - action: light.turn_on
                                 target:
                                   entity_id: !input target_lights
                                 data:
                                   brightness: "{{ cur_b | int }}"
-                                  color_temp_kelvin: "{{ cur_k | int }}"
                                   transition: "{{ v_transition | float(0) }}"
                               - action: input_text.set_value
                                 target:
@@ -574,12 +594,14 @@ actions:
                               new_k: "{{ ((v_min_kelvin | int) + ((new_b | int - 1) / 254) * ((v_max_kelvin |
                                 int) - (v_min_kelvin | int))) | round(0) | int
                                 }}"
-                          - action: light.turn_on
-                            target:
-                              entity_id: !input target_lights
-                            data:
-                              color_temp_kelvin: "{{ new_k | int }}"
-                              transition: "{{ v_transition | float(0) }}"
+                          - if: "{{ v_dim_to_warm }}"
+                            then:
+                              - action: light.turn_on
+                                target:
+                                  entity_id: !input target_lights
+                                data:
+                                  color_temp_kelvin: "{{ new_k | int }}"
+                                  transition: "{{ v_transition | float(0) }}"
                           - action: light.turn_on
                             target:
                               entity_id: !input target_lights
@@ -598,12 +620,19 @@ actions:
               - choose:
                   - conditions: "{{ not any_on }}"
                     sequence:
+                      - if: "{{ v_dim_to_warm }}"
+                        then:
+                          - action: light.turn_on
+                            target:
+                              entity_id: !input target_lights
+                            data:
+                              color_temp_kelvin: "{{ cur_k | int }}"
+                              transition: "{{ v_transition | float(0) }}"
                       - action: light.turn_on
                         target:
                           entity_id: !input target_lights
                         data:
                           brightness: "{{ cur_b | int }}"
-                          color_temp_kelvin: "{{ cur_k | int }}"
                           transition: "{{ v_transition | float(0) }}"
                       - action: input_text.set_value
                         target:
@@ -615,12 +644,14 @@ actions:
                       new_b: "{{ [[(cur_b | int) + (v_bright_step | int), 255] | min, 1] | max }}"
                       new_k: "{{ ((v_min_kelvin | int) + ((new_b | int - 1) / 254) * ((v_max_kelvin |
                         int) - (v_min_kelvin | int))) | round(0) | int }}"
-                  - action: light.turn_on
-                    target:
-                      entity_id: !input target_lights
-                    data:
-                      color_temp_kelvin: "{{ new_k | int }}"
-                      transition: "{{ v_transition | float(0) }}"
+                  - if: "{{ v_dim_to_warm }}"
+                    then:
+                      - action: light.turn_on
+                        target:
+                          entity_id: !input target_lights
+                        data:
+                          color_temp_kelvin: "{{ new_k | int }}"
+                          transition: "{{ v_transition | float(0) }}"
                   - action: light.turn_on
                     target:
                       entity_id: !input target_lights
@@ -651,12 +682,14 @@ actions:
                     iter_k_new: "{{ ((v_min_kelvin | int) + ((iter_b_new | int - 1) / 254) *
                       ((v_max_kelvin | int) - (v_min_kelvin | int))) | round(0)
                       | int }}"
-                - action: light.turn_on
-                  target:
-                    entity_id: !input target_lights
-                  data:
-                    color_temp_kelvin: "{{ iter_k_new | int }}"
-                    transition: "{{ (v_long_interval | float / 1000) }}"
+                - if: "{{ v_dim_to_warm }}"
+                  then:
+                    - action: light.turn_on
+                      target:
+                        entity_id: !input target_lights
+                      data:
+                        color_temp_kelvin: "{{ iter_k_new | int }}"
+                        transition: "{{ (v_long_interval | float / 1000) }}"
                 - action: light.turn_on
                   target:
                     entity_id: !input target_lights
@@ -716,12 +749,14 @@ actions:
                                       new_k: "{{ ((v_min_kelvin | int) + ((new_b | int - 1) / 254) * ((v_max_kelvin |
                                         int) - (v_min_kelvin | int))) | round(0)
                                         | int }}"
-                                  - action: light.turn_on
-                                    target:
-                                      entity_id: !input target_lights
-                                    data:
-                                      color_temp_kelvin: "{{ new_k | int }}"
-                                      transition: "{{ v_transition | float(0) }}"
+                                  - if: "{{ v_dim_to_warm }}"
+                                    then:
+                                      - action: light.turn_on
+                                        target:
+                                          entity_id: !input target_lights
+                                        data:
+                                          color_temp_kelvin: "{{ new_k | int }}"
+                                          transition: "{{ v_transition | float(0) }}"
                                   - action: light.turn_on
                                     target:
                                       entity_id: !input target_lights
@@ -756,12 +791,14 @@ actions:
                               new_k: "{{ ((v_min_kelvin | int) + ((new_b | int - 1) / 254) * ((v_max_kelvin |
                                 int) - (v_min_kelvin | int))) | round(0) | int
                                 }}"
-                          - action: light.turn_on
-                            target:
-                              entity_id: !input target_lights
-                            data:
-                              color_temp_kelvin: "{{ new_k | int }}"
-                              transition: "{{ v_transition | float(0) }}"
+                          - if: "{{ v_dim_to_warm }}"
+                            then:
+                              - action: light.turn_on
+                                target:
+                                  entity_id: !input target_lights
+                                data:
+                                  color_temp_kelvin: "{{ new_k | int }}"
+                                  transition: "{{ v_transition | float(0) }}"
                           - action: light.turn_on
                             target:
                               entity_id: !input target_lights
@@ -795,12 +832,14 @@ actions:
                     iter_k_new: "{{ ((v_min_kelvin | int) + ((iter_b_new | int - 1) / 254) *
                       ((v_max_kelvin | int) - (v_min_kelvin | int))) | round(0)
                       | int }}"
-                - action: light.turn_on
-                  target:
-                    entity_id: !input target_lights
-                  data:
-                    color_temp_kelvin: "{{ iter_k_new | int }}"
-                    transition: "{{ (v_long_interval | float / 1000) }}"
+                - if: "{{ v_dim_to_warm }}"
+                  then:
+                    - action: light.turn_on
+                      target:
+                        entity_id: !input target_lights
+                      data:
+                        color_temp_kelvin: "{{ iter_k_new | int }}"
+                        transition: "{{ (v_long_interval | float / 1000) }}"
                 - action: light.turn_on
                   target:
                     entity_id: !input target_lights
