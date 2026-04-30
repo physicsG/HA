@@ -551,105 +551,105 @@ actions:
       v_state_5_count: "{{ v_state_5_switches | length }}"
 
   - choose:
-      # ════ LEFT short ════
+      # ════ LEFT short / double ════
+      # Single press → cycle one state backward (1↔4↔3↔2↔1, hidden 5 → 4).
+      # Double press → jump to default state (always intercepted; the
+      # `button_left_double_press` input is ignored for the state-jump
+      # gesture but `action_button_left_double` still fires on double-press).
       - conditions: "{{ trigger_action_final == 'arrow_left_click' }}"
         sequence:
-          - variables:
-              new_state: "{{ ((cur_state | int + 2) % 4) + 1 }}"
           - choose:
-              - conditions: "{{ button_left_double_press }}"
+              # Double-press detected (always intercepted).
+              - conditions:
+                  - "{{ last_controller_event == 'arrow_left_click' }}"
+                  - "{{ trigger_delta <= (helper_double_press_delay | int) }}"
                 sequence:
+                  - variables:
+                      new_state: "{{ v_default_state | int }}"
+                  - action: input_text.set_value
+                    target:
+                      entity_id: !input helper_last_controller_event
+                    data:
+                      value: '{{ {"a":"double_press_left","t":as_timestamp(now())} | to_json }}'
                   - choose:
-                      - conditions:
-                          - "{{ last_controller_event == 'arrow_left_click' }}"
-                          - "{{ trigger_delta <= (helper_double_press_delay |
-                            int) }}"
-                        sequence:
-                          - action: input_text.set_value
-                            target:
-                              entity_id: !input helper_last_controller_event
-                            data:
-                              value: '{{ {"a":"double_press_left","t":as_timestamp(now())} | to_json }}'
-                          - choose:
-                              - conditions: []
-                                sequence: !input action_button_left_double
-                    default:
-                      - delay:
-                          milliseconds: "{{ adjusted_double_press_delay | int }}"
+                      - conditions: []
+                        sequence: !input action_button_left_double
+                  - action: input_text.set_value
+                    target:
+                      entity_id: !input helper_state
+                    data:
+                      value: "{{ dict(_parsed_state, b=cur_b | int, k=cur_k | int, s=new_state, i=0) |
+                        to_json }}"
+                  - if: "{{ v_state_indicator_enabled and any_on }}"
+                    then: &state_indicator
                       - choose:
-                          - conditions: []
-                            sequence: !input action_button_left_short
-                      - action: input_text.set_value
+                          # State 1 — subtle: shift kelvin and back.
+                          - conditions: "{{ new_state == 1 }}"
+                            sequence:
+                              - action: light.turn_on
+                                target:
+                                  entity_id: !input target_lights
+                                data:
+                                  color_temp_kelvin: "{{ [[(cur_k | int) + 600, v_max_kelvin | int] | min,
+                                    v_min_kelvin | int] | max }}"
+                                  transition: 0.1
+                          # State 2 — quick purple flash (color cycle hint).
+                          - conditions: "{{ new_state == 2 }}"
+                            sequence:
+                              - action: light.turn_on
+                                target:
+                                  entity_id: !input target_lights
+                                data:
+                                  rgb_color: [ 180, 0, 255 ]
+                                  transition: 0.1
+                          # State 3 — quick brightness blip (brightness hint).
+                          - conditions: "{{ new_state == 3 }}"
+                            sequence:
+                              - action: light.turn_on
+                                target:
+                                  entity_id: !input target_lights
+                                data:
+                                  brightness: "{{ [(cur_b | int) // 2, 1] | max }}"
+                                  transition: 0.1
+                          # State 4 — random color per light (scene cycle hint).
+                          - conditions: "{{ new_state == 4 }}"
+                            sequence:
+                              - repeat:
+                                  for_each: "{{ v_target_lights }}"
+                                  sequence:
+                                    - action: light.turn_on
+                                      target:
+                                        entity_id: "{{ repeat.item }}"
+                                      data:
+                                        rgb_color:
+                                          - "{{ range(0, 256) | random }}"
+                                          - "{{ range(0, 256) | random }}"
+                                          - "{{ range(0, 256) | random }}"
+                                        transition: 0.1
+                          # State 5 — brief red flash (plug-toggle mode).
+                          - conditions: "{{ new_state == 5 }}"
+                            sequence:
+                              - action: light.turn_on
+                                target:
+                                  entity_id: !input target_lights
+                                data:
+                                  rgb_color: [ 255, 0, 0 ]
+                                  transition: 0.1
+                      - delay:
+                          milliseconds: "{{ v_state_indicator_duration_ms | int }}"
+                      - action: light.turn_on
                         target:
-                          entity_id: !input helper_state
+                          entity_id: !input target_lights
                         data:
-                          value: "{{ dict(_parsed_state, b=cur_b | int, k=cur_k | int, s=new_state, i=0) | to_json }}"
-                      - if: "{{ v_state_indicator_enabled and any_on }}"
-                        then: &state_indicator
-                          - choose:
-                              # State 1 — subtle: shift kelvin and back.
-                              - conditions: "{{ new_state == 1 }}"
-                                sequence:
-                                  - action: light.turn_on
-                                    target:
-                                      entity_id: !input target_lights
-                                    data:
-                                      color_temp_kelvin: "{{ [[(cur_k | int) + 600,
-                                        v_max_kelvin | int] | min,
-                                        v_min_kelvin | int] | max }}"
-                                      transition: 0.1
-                              # State 2 — quick purple flash (color cycle hint).
-                              - conditions: "{{ new_state == 2 }}"
-                                sequence:
-                                  - action: light.turn_on
-                                    target:
-                                      entity_id: !input target_lights
-                                    data:
-                                      rgb_color: [ 180, 0, 255 ]
-                                      transition: 0.1
-                              # State 3 — quick brightness blip (brightness hint).
-                              - conditions: "{{ new_state == 3 }}"
-                                sequence:
-                                  - action: light.turn_on
-                                    target:
-                                      entity_id: !input target_lights
-                                    data:
-                                      brightness: "{{ [(cur_b | int) // 2, 1] | max }}"
-                                      transition: 0.1
-                              # State 4 — random color per light (scene cycle hint).
-                              - conditions: "{{ new_state == 4 }}"
-                                sequence:
-                                  - repeat:
-                                      for_each: "{{ v_target_lights }}"
-                                      sequence:
-                                        - action: light.turn_on
-                                          target:
-                                            entity_id: "{{ repeat.item }}"
-                                          data:
-                                            rgb_color:
-                                              - "{{ range(0, 256) | random }}"
-                                              - "{{ range(0, 256) | random }}"
-                                              - "{{ range(0, 256) | random }}"
-                                            transition: 0.1
-                              # State 5 — brief red flash (plug-toggle mode).
-                              - conditions: "{{ new_state == 5 }}"
-                                sequence:
-                                  - action: light.turn_on
-                                    target:
-                                      entity_id: !input target_lights
-                                    data:
-                                      rgb_color: [ 255, 0, 0 ]
-                                      transition: 0.1
-                          - delay:
-                              milliseconds: "{{ v_state_indicator_duration_ms | int }}"
-                          - action: light.turn_on
-                            target:
-                              entity_id: !input target_lights
-                            data:
-                              brightness: "{{ cur_b | int }}"
-                              color_temp_kelvin: "{{ cur_k | int }}"
-                              transition: 0.1
+                          brightness: "{{ cur_b | int }}"
+                          color_temp_kelvin: "{{ cur_k | int }}"
+                          transition: 0.1
             default:
+              # Single press — wait out double-press window, then cycle back.
+              - delay:
+                  milliseconds: "{{ adjusted_double_press_delay | int }}"
+              - variables:
+                  new_state: "{{ ((cur_state | int + 2) % 4) + 1 }}"
               - choose:
                   - conditions: []
                     sequence: !input action_button_left_short
@@ -657,24 +657,31 @@ actions:
                 target:
                   entity_id: !input helper_state
                 data:
-                  value: "{{ dict(_parsed_state, b=cur_b | int, k=cur_k | int, s=new_state, i=0) | to_json }}"
+                  value: "{{ dict(_parsed_state, b=cur_b | int, k=cur_k | int, s=new_state, i=0) |
+                    to_json }}"
               - if: "{{ v_state_indicator_enabled and any_on }}"
                 then: *state_indicator
 
       # ════ LEFT long ════
-      # Runs the user's left-long action then jumps to the default state.
+      # Runs the user's left-long action (optionally looped), then jumps to
+      # the default state (same destination as double-left).
       - conditions: "{{ trigger_action_final == 'arrow_left_hold' }}"
         sequence:
           - variables:
               new_state: "{{ v_default_state | int }}"
           - choose:
-              - conditions: []
-                sequence: !input action_button_left_long
+              - conditions: "{{ button_left_long_loop }}"
+                sequence:
+                  - repeat:
+                      while: "{{ repeat.index < (long_press_max_loop_repeats | int) }}"
+                      sequence: !input action_button_left_long
+            default: !input action_button_left_long
           - action: input_text.set_value
             target:
               entity_id: !input helper_state
             data:
-              value: "{{ dict(_parsed_state, b=cur_b | int, k=cur_k | int, s=new_state, i=0) | to_json }}"
+              value: "{{ dict(_parsed_state, b=cur_b | int, k=cur_k | int, s=new_state, i=0) |
+                to_json }}"
           - if: "{{ v_state_indicator_enabled and any_on }}"
             then: *state_indicator
 
@@ -688,45 +695,44 @@ actions:
               - conditions: []
                 sequence: !input action_button_left_release
 
-      # ════ RIGHT short ════
+      # ════ RIGHT short / double ════
+      # Single press → cycle one state forward (1→2→3→4→1, hidden 5 → 1).
+      # Double press → jump to hidden state 5 (plug-toggle mode).
       - conditions: "{{ trigger_action_final == 'arrow_right_click' }}"
         sequence:
-          - variables:
-              # If we're in hidden state 5 (plug mode), exit to state 1.
-              # Otherwise advance through the visible 4-state cycle.
-              new_state: "{{ 1 if (cur_state | int) == 5
-                else (((cur_state | int) % 4) + 1) }}"
           - choose:
-              - conditions: "{{ button_right_double_press }}"
+              # Double-press detected (always intercepted).
+              - conditions:
+                  - "{{ last_controller_event == 'arrow_right_click' }}"
+                  - "{{ trigger_delta <= (helper_double_press_delay | int) }}"
                 sequence:
+                  - variables:
+                      new_state: 5
+                  - action: input_text.set_value
+                    target:
+                      entity_id: !input helper_last_controller_event
+                    data:
+                      value: '{{ {"a":"double_press_right","t":as_timestamp(now())} | to_json }}'
                   - choose:
-                      - conditions:
-                          - "{{ last_controller_event == 'arrow_right_click' }}"
-                          - "{{ trigger_delta <= (helper_double_press_delay |
-                            int) }}"
-                        sequence:
-                          - action: input_text.set_value
-                            target:
-                              entity_id: !input helper_last_controller_event
-                            data:
-                              value: '{{ {"a":"double_press_right","t":as_timestamp(now())} | to_json }}'
-                          - choose:
-                              - conditions: []
-                                sequence: !input action_button_right_double
-                    default:
-                      - delay:
-                          milliseconds: "{{ adjusted_double_press_delay | int }}"
-                      - choose:
-                          - conditions: []
-                            sequence: !input action_button_right_short
-                      - action: input_text.set_value
-                        target:
-                          entity_id: !input helper_state
-                        data:
-                          value: "{{ dict(_parsed_state, b=cur_b | int, k=cur_k | int, s=new_state, i=0) | to_json }}"
-                      - if: "{{ v_state_indicator_enabled and any_on }}"
-                        then: *state_indicator
+                      - conditions: []
+                        sequence: !input action_button_right_double
+                  - action: input_text.set_value
+                    target:
+                      entity_id: !input helper_state
+                    data:
+                      value: "{{ dict(_parsed_state, b=cur_b | int, k=cur_k | int, s=new_state, i=0) |
+                        to_json }}"
+                  - if: "{{ v_state_indicator_enabled and any_on }}"
+                    then: *state_indicator
             default:
+              # Single press — wait out double-press window, then cycle forward.
+              - delay:
+                  milliseconds: "{{ adjusted_double_press_delay | int }}"
+              - variables:
+                  # If currently in hidden state 5, exit to state 1.
+                  # Otherwise advance through the visible 4-state cycle.
+                  new_state: "{{ 1 if (cur_state | int) == 5 else (((cur_state | int) % 4) + 1)
+                    }}"
               - choose:
                   - conditions: []
                     sequence: !input action_button_right_short
@@ -734,25 +740,31 @@ actions:
                 target:
                   entity_id: !input helper_state
                 data:
-                  value: "{{ dict(_parsed_state, b=cur_b | int, k=cur_k | int, s=new_state, i=0) | to_json }}"
+                  value: "{{ dict(_parsed_state, b=cur_b | int, k=cur_k | int, s=new_state, i=0) |
+                    to_json }}"
               - if: "{{ v_state_indicator_enabled and any_on }}"
                 then: *state_indicator
 
       # ════ RIGHT long ════
-      # Runs the user's right-long action then jumps to hidden state 5
-      # (plug-toggle mode). State 5 is unreachable via right-short.
+      # Runs the user's right-long action (optionally looped), then jumps to
+      # hidden state 5 (same destination as double-right).
       - conditions: "{{ trigger_action_final == 'arrow_right_hold' }}"
         sequence:
           - variables:
               new_state: 5
           - choose:
-              - conditions: []
-                sequence: !input action_button_right_long
+              - conditions: "{{ button_right_long_loop }}"
+                sequence:
+                  - repeat:
+                      while: "{{ repeat.index < (long_press_max_loop_repeats | int) }}"
+                      sequence: !input action_button_right_long
+            default: !input action_button_right_long
           - action: input_text.set_value
             target:
               entity_id: !input helper_state
             data:
-              value: "{{ dict(_parsed_state, b=cur_b | int, k=cur_k | int, s=new_state, i=0) | to_json }}"
+              value: "{{ dict(_parsed_state, b=cur_b | int, k=cur_k | int, s=new_state, i=0) |
+                to_json }}"
           - if: "{{ v_state_indicator_enabled and any_on }}"
             then: *state_indicator
 
