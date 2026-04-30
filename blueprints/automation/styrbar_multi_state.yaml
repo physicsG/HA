@@ -547,8 +547,7 @@ actions:
                         target:
                           entity_id: !input helper_state
                         data:
-                          value: "{{ {**_parsed_state, 'b': cur_b | int, 'k': cur_k | int, 's': new_state,
-                            'i': 0} | to_json }}"
+                          value: "{{ dict(_parsed_state, b=cur_b | int, k=cur_k | int, s=new_state, i=0) | to_json }}"
                       - if: "{{ v_state_indicator_enabled and any_on }}"
                         then: &state_indicator
                           - choose:
@@ -601,8 +600,7 @@ actions:
                 target:
                   entity_id: !input helper_state
                 data:
-                  value: "{{ {**_parsed_state, 'b': cur_b | int, 'k': cur_k | int, 's': new_state,
-                    'i': 0} | to_json }}"
+                  value: "{{ dict(_parsed_state, b=cur_b | int, k=cur_k | int, s=new_state, i=0) | to_json }}"
               - if: "{{ v_state_indicator_enabled and any_on }}"
                 then: *state_indicator
 
@@ -659,8 +657,7 @@ actions:
                         target:
                           entity_id: !input helper_state
                         data:
-                          value: "{{ {**_parsed_state, 'b': cur_b | int, 'k': cur_k | int, 's': new_state,
-                            'i': 0} | to_json }}"
+                          value: "{{ dict(_parsed_state, b=cur_b | int, k=cur_k | int, s=new_state, i=0) | to_json }}"
                       - if: "{{ v_state_indicator_enabled and any_on }}"
                         then: *state_indicator
             default:
@@ -671,8 +668,7 @@ actions:
                 target:
                   entity_id: !input helper_state
                 data:
-                  value: "{{ {**_parsed_state, 'b': cur_b | int, 'k': cur_k | int, 's': new_state,
-                    'i': 0} | to_json }}"
+                  value: "{{ dict(_parsed_state, b=cur_b | int, k=cur_k | int, s=new_state, i=0) | to_json }}"
               - if: "{{ v_state_indicator_enabled and any_on }}"
                 then: *state_indicator
 
@@ -749,7 +745,7 @@ actions:
                                         target:
                                           entity_id: !input helper_state
                                         data:
-                                          value: "{{ {**_parsed_state, 'b': cur_b | int, 'k': cur_k | int} | to_json }}"
+                                          value: "{{ dict(_parsed_state, b=cur_b | int, k=cur_k | int) | to_json }}"
                                 default:
                                   - variables:
                                       new_b: "{{ [[(cur_b | int) + (v_bright_step | int), 255] | min, 1] | max }}"
@@ -774,7 +770,7 @@ actions:
                                     target:
                                       entity_id: !input helper_state
                                     data:
-                                      value: "{{ {**_parsed_state, 'b': new_b | int, 'k': new_k | int} | to_json }}"
+                                      value: "{{ dict(_parsed_state, b=new_b | int, k=new_k | int) | to_json }}"
                           # ── State 2 — Color cycle (forward) ──
                           - conditions: "{{ cur_state == 2 }}"
                             sequence:
@@ -790,7 +786,7 @@ actions:
                                 target:
                                   entity_id: !input helper_state
                                 data:
-                                  value: "{{ {**_parsed_state, 'i': new_index | int} | to_json }}"
+                                  value: "{{ dict(_parsed_state, i=new_index | int) | to_json }}"
                           # ── State 3 — Brightness only ──
                           - conditions: "{{ cur_state == 3 }}"
                             sequence:
@@ -806,7 +802,7 @@ actions:
                                 target:
                                   entity_id: !input helper_state
                                 data:
-                                  value: "{{ {**_parsed_state, 'b': new_b | int} | to_json }}"
+                                  value: "{{ dict(_parsed_state, b=new_b | int) | to_json }}"
                           # ── State 4 — Scene cycle (forward) ──
                           - conditions: "{{ cur_state == 4 and (v_state_4_count | int) > 0 }}"
                             sequence:
@@ -819,7 +815,7 @@ actions:
                                 target:
                                   entity_id: !input helper_state
                                 data:
-                                  value: "{{ {**_parsed_state, 'i': new_index | int} | to_json }}"
+                                  value: "{{ dict(_parsed_state, i=new_index | int) | to_json }}"
             default:
               - choose:
                   - conditions: []
@@ -921,7 +917,7 @@ actions:
                                             target:
                                               entity_id: !input helper_state
                                             data:
-                                              value: "{{ {**_parsed_state, 'b': new_b | int, 'k': new_k | int} | to_json }}"
+                                              value: "{{ dict(_parsed_state, b=new_b | int, k=new_k | int) | to_json }}"
                           # ── State 2 — Color cycle (backward) ──
                           - conditions: "{{ cur_state == 2 }}"
                             sequence:
@@ -937,7 +933,7 @@ actions:
                                 target:
                                   entity_id: !input helper_state
                                 data:
-                                  value: "{{ {**_parsed_state, 'i': new_index | int} | to_json }}"
+                                  value: "{{ dict(_parsed_state, i=new_index | int) | to_json }}"
                           # ── State 3 — Brightness only ──
                           - conditions: "{{ cur_state == 3 and any_on }}"
                             sequence:
@@ -964,7 +960,7 @@ actions:
                                     target:
                                       entity_id: !input helper_state
                                     data:
-                                      value: "{{ {**_parsed_state, 'b': new_b | int} | to_json }}"
+                                      value: "{{ dict(_parsed_state, b=new_b | int) | to_json }}"
                           # ── State 4 — Scene cycle (backward) ──
                           - conditions: "{{ cur_state == 4 and (v_state_4_count | int) > 0 }}"
                             sequence:
@@ -977,7 +973,7 @@ actions:
                                 target:
                                   entity_id: !input helper_state
                                 data:
-                                  value: "{{ {**_parsed_state, 'i': new_index | int} | to_json }}"
+                                  value: "{{ dict(_parsed_state, i=new_index | int) | to_json }}"
             default:
               - choose:
                   - conditions: []
